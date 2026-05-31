@@ -131,10 +131,41 @@ echo ""
 echo "→ Code sign (inside-out, hardened runtime)"
 ENTITLEMENTS="desktop/YKOrchestrator/YKOrchestrator.entitlements"
 
-# Backend Mach-O alt dosyaları
-find "${APP_RES}/backend" \( -name "*.so" -o -name "*.dylib" \) -type f -print0 | \
+# Backend içindeki TÜM Mach-O dosyalarını recursive olarak imzala.
+# PyInstaller onedir bundle'ında uzantısız framework binary'leri de var
+# (örn. Python.framework/Versions/3.12/Python) — find -name pattern'i yetmez.
+echo "  Mach-O dosyalarını topluyorum..."
+MACHO_LIST=$(mktemp)
+find "${APP_RES}/backend" -type f -print0 | while IFS= read -r -d '' f; do
+  # Mach-O magic number (cf fa ed fe or fe ed fa cf etc.) sahibi mi?
+  if /usr/bin/file -b "$f" 2>/dev/null | grep -q "Mach-O"; then
+    printf '%s\0' "$f" >> "${MACHO_LIST}"
+  fi
+done
+MACHO_COUNT=$(grep -c '' "${MACHO_LIST}" 2>/dev/null || echo "0")
+echo "  ${MACHO_COUNT} Mach-O dosyası imzalanacak"
+
+# Framework'leri ayrı imzala (deep sealing için)
+find "${APP_RES}/backend" -type d -name "*.framework" -print0 | while IFS= read -r -d '' fw; do
+  # Önce framework içindeki binary'yi imzala (Versions/X/Y → ana binary)
+  FW_BIN=$(find "$fw" -type f -path "*/Versions/*" ! -path "*/Resources/*" ! -name "Info.plist" | head -1)
+  if [[ -n "${FW_BIN}" ]]; then
+    codesign --force --options runtime --timestamp \
+      --sign "${SIGNING_IDENTITY}" "${FW_BIN}" 2>&1 | head -1 || true
+  fi
+done
+
+# Tüm Mach-O dosyalarını imzala (uzantısız dahil)
+xargs -0 -I{} codesign --force --options runtime --timestamp \
+  --sign "${SIGNING_IDENTITY}" {} < "${MACHO_LIST}" 2>&1 | tail -3
+rm -f "${MACHO_LIST}"
+
+# Framework'lerin kendilerini imzala (üst-seviye seal)
+find "${APP_RES}/backend" -type d -name "*.framework" -print0 | \
   xargs -0 -I{} codesign --force --options runtime --timestamp \
-    --entitlements "${ENTITLEMENTS}" --sign "${SIGNING_IDENTITY}" {} 2>/dev/null || true
+    --sign "${SIGNING_IDENTITY}" {} 2>&1 | tail -3
+
+# Son olarak ana entry binary'yi entitlements ile imzala
 codesign --force --options runtime --timestamp \
   --entitlements "${ENTITLEMENTS}" --sign "${SIGNING_IDENTITY}" \
   "${APP_RES}/backend/ykorch-api"
