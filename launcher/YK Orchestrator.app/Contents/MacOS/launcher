@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# YK Orchestrator launcher .app
+# TCC sorununu aşmak için Terminal aracılığıyla başlatır.
+SELF="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SELF/../../../.." && pwd)"
+START="$ROOT/launcher/Start.command"
+
+# Terminal'i çağır, Start.command'i çalıştır. Terminal'in Desktop yetkisi var.
+/usr/bin/osascript <<EOF
+tell application "Terminal"
+    activate
+    do script "exec '$START'"
+end tell
+EOF

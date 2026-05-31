@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+SELF="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SELF/../../../.." && pwd)"
+STOP="$ROOT/launcher/Stop.command"
+
+/usr/bin/osascript <<EOF
+tell application "Terminal"
+    do script "exec '$STOP'"
+end tell
+EOF

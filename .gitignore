@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+.env
+.env.local
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+*.log
+npm-debug.log*
+
+# Data
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/chroma/
+data/cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Build
+dist/
+build/
+*.ipa
+*.xcarchive
+*.dmg
+
+# Xcode (xcodegen üretiyor, kaynak değil)
+desktop/YKOrchestrator.xcodeproj/
+desktop/build/
+desktop/.build/
+
+# .app içine kopyalanan üretim çıktıları
+desktop/YKOrchestrator/Resources/backend/
+desktop/YKOrchestrator/Resources/dashboard/
+
+# Logs
+logs/
+*.log
+
+# Runtime PID
+.run/
