@@ -1,8 +1,17 @@
 <?xml version='1.0' encoding='utf-8'?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <title>YK Orchestrator</title>
     <link>https://github.com/ersel95/yk-orchestrator</link>
     <description>YK Orchestrator updates</description>
+    <item>
+      <title>YK Orchestrator 0.1.0</title>
+      <pubDate>Sun, 31 May 2026 21:32:47 +0000</pubDate>
+      <sparkle:version>0.1.0</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/ersel95/yk-orchestrator/releases/tag/v0.1.0</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/ersel95/yk-orchestrator/releases/download/v0.1.0/YKOrchestrator-0.1.0.dmg" length="95681390" type="application/octet-stream" sparkle:edSignature="USyiCZJjD1vUoLihi3Y33X+ta7f+qssMDtAZLgQXDe272cFDq8nzd+CxcPAYmumnedG3lfaUOn7uRCOGUzORAw==" />
+    </item>
   </channel>
 </rss>
