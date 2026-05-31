@@ -121,6 +121,7 @@ fi
 echo ""
 echo "→ Backend + Dashboard .app içine kopyalanıyor"
 APP_RES="${APP}/Contents/Resources"
+mkdir -p "${APP_RES}"
 rm -rf "${APP_RES}/backend" "${APP_RES}/dashboard"
 cp -R "${RES_SRC}/backend"   "${APP_RES}/backend"
 cp -R "${RES_SRC}/dashboard" "${APP_RES}/dashboard"
