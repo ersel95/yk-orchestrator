@@ -33,9 +33,13 @@ data/cache/
 *.swp
 .DS_Store
 
-# Build
+# Build çıktıları (script'leri değil — onlar tracked)
 dist/
-build/
+build/dist/
+build/release/
+build/derived/
+build/work/
+build/.venv-build/
 *.ipa
 *.xcarchive
 *.dmg
