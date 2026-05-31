@@ -10,10 +10,15 @@ final class KeychainStore {
     private let service = "com.yapikredi.ykorchestrator"
 
     /// Anahtar → backend ENV adı eşleşmesi.
+    /// LLM provider key'leri: provider id'leriyle uyumlu — backend
+    /// app.core.config.Settings içinde ENV'den okunup ProviderConfig.api_key'e
+    /// inject edilir.
     private let knownKeys: [(key: String, env: String)] = [
         ("jira_api_token",         "JIRA_API_TOKEN"),
         ("bitbucket_app_password", "BITBUCKET_APP_PASSWORD"),
         ("llm_api_key",            "LLM_API_KEY"),
+        ("anthropic_api_key",      "ANTHROPIC_API_KEY"),
+        ("openai_api_key",         "OPENAI_API_KEY"),
     ]
 
     // MARK: - Public API

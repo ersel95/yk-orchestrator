@@ -1,8 +1,9 @@
 import json
 import os
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.paths import (
@@ -14,8 +15,53 @@ from app.core.paths import (
 )
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Provider + Role config nested modelleri
+# ─────────────────────────────────────────────────────────────────────────
+
+ProviderKind = Literal["openai_compatible", "anthropic"]
+
+
+class ProviderConfig(BaseModel):
+    """Tek bir LLM provider tanımı (config.json'daki bir item).
+
+    `kind=openai_compatible` LM Studio/Ollama/OpenAI için (base_url farklı).
+    `kind=anthropic` Anthropic Messages API için (base_url ignored).
+    """
+    id: str                          # "lm_studio" | "anthropic" | "openai" | ...
+    kind: ProviderKind
+    base_url: str = ""               # openai_compatible için zorunlu
+    api_key: str = ""                # ENV ile inject edilir; config.json'da boş tutulabilir
+    api_key_env: str = ""            # bu provider'ın api_key'ini hangi ENV'den oku (alternatif)
+    timeout_seconds: int = 300
+
+
+class RoleAssignment(BaseModel):
+    """Bir rolü bir (provider, model) çiftine bağlar."""
+    provider: str                    # ProviderConfig.id'lerinden biri
+    model: str                       # Provider'a göre model id
+
+
+# Tüm sistemin desteklediği roller. Wizard ve agent'lar bunlardan birine bağlanır.
+KNOWN_ROLES = (
+    "daily_writer",     # Bugün/dün metin üretimi
+    "pr_summarizer",    # PR diff özeti
+    "pr_commenter",     # PR inline yorum önerileri
+    "code_reviewer",    # Daha derin kod review
+    "transcript",       # Daily toplantı transkript özeti
+    "chat",             # RAG chat
+    "embed",            # Vektör embedding (sadece openai_compatible)
+)
+
+# Geriye dönük "kind" parametresinden role'e map
+LEGACY_KIND_TO_ROLE: dict[str, str] = {
+    "general": "daily_writer",
+    "code": "pr_summarizer",
+    "embed": "embed",
+}
+
+
 def _load_json_config() -> dict[str, Any]:
-    """~/Library/Application Support/.../config.json'ı oku. Yoksa boş dict."""
     path = user_config_path()
     if not path.exists():
         return {}
@@ -25,6 +71,10 @@ def _load_json_config() -> dict[str, Any]:
     except (json.JSONDecodeError, OSError):
         return {}
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# Settings
+# ─────────────────────────────────────────────────────────────────────────
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -43,10 +93,15 @@ class Settings(BaseSettings):
     api_port: int = 8765
     dashboard_port: int = 3000
 
-    # Veri yolları runtime'da paths.py'den geliyor — ENV override edilebilir
     database_url: str = ""
     chroma_persist_dir: str = ""
 
+    # ── Yeni multi-provider şeması ─────────────────────────────────────
+    providers: list[ProviderConfig] = Field(default_factory=list)
+    model_roles: dict[str, RoleAssignment] = Field(default_factory=dict)
+
+    # ── Eski tek-provider alanları (backward compat) ──────────────────
+    # providers boşsa bu alanlardan tek provider otomatik üretilir.
     llm_base_url: str = "http://127.0.0.1:1234/v1"
     llm_api_key: str = "lm-studio"
     llm_model_general: str = "qwen2.5-72b-instruct"
@@ -54,6 +109,10 @@ class Settings(BaseSettings):
     llm_model_embed: str = "nomic-embed-text"
     llm_timeout_seconds: int = 300
     llm_temperature: float = 0.3
+
+    # ── Provider-özel API key ENV girişleri (KeychainStore tarafından inject) ──
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
 
     jira_base_url: str = ""
     jira_email: str = ""
@@ -80,11 +139,51 @@ class Settings(BaseSettings):
     dashboard_allow_origin: str = "http://localhost:3000"
 
     def model_post_init(self, __context: Any) -> None:
-        # Veri yolu boşsa runtime resolver'dan doldur
         if not self.database_url:
             self.database_url = f"sqlite:///{sqlite_path()}"
         if not self.chroma_persist_dir:
             self.chroma_persist_dir = str(chroma_dir())
+
+        # providers boşsa eski tek-provider config'ten LM Studio üret
+        if not self.providers:
+            self.providers = [
+                ProviderConfig(
+                    id="lm_studio",
+                    kind="openai_compatible",
+                    base_url=self.llm_base_url,
+                    api_key=self.llm_api_key,
+                    timeout_seconds=self.llm_timeout_seconds,
+                )
+            ]
+
+        # ENV / api_key_env üzerinden api_key inject (config.json'a token yazılmaz)
+        env_map = {
+            "anthropic": self.anthropic_api_key,
+            "openai": self.openai_api_key,
+            "lm_studio": self.llm_api_key,
+        }
+        for p in self.providers:
+            if not p.api_key:
+                # api_key_env varsa onu kullan
+                if p.api_key_env and os.environ.get(p.api_key_env):
+                    p.api_key = os.environ[p.api_key_env]
+                # provider id'ye göre default ENV
+                elif env_map.get(p.id):
+                    p.api_key = env_map[p.id]
+
+        # model_roles boşsa eski 3-rol mantığından (general/code/embed) türet
+        if not self.model_roles:
+            default_provider = self.providers[0].id
+            defaults: dict[str, RoleAssignment] = {
+                "daily_writer":  RoleAssignment(provider=default_provider, model=self.llm_model_general),
+                "pr_summarizer": RoleAssignment(provider=default_provider, model=self.llm_model_code),
+                "pr_commenter":  RoleAssignment(provider=default_provider, model=self.llm_model_code),
+                "code_reviewer": RoleAssignment(provider=default_provider, model=self.llm_model_code),
+                "transcript":    RoleAssignment(provider=default_provider, model=self.llm_model_general),
+                "chat":          RoleAssignment(provider=default_provider, model=self.llm_model_general),
+                "embed":         RoleAssignment(provider=default_provider, model=self.llm_model_embed),
+            }
+            self.model_roles = defaults
 
     @property
     def jira_project_list(self) -> list[str]:
@@ -94,15 +193,16 @@ class Settings(BaseSettings):
     def is_bundled(self) -> bool:
         return is_frozen()
 
+    def provider_by_id(self, pid: str) -> ProviderConfig | None:
+        for p in self.providers:
+            if p.id == pid:
+                return p
+        return None
+
 
 @lru_cache
 def get_settings() -> Settings:
-    """ENV > config.json > default sırası ile yükle.
-
-    Pydantic-settings'te init kwargs en yüksek önceliklidir; bu yüzden JSON'dan
-    gelen değerleri sadece ilgili ENV değişkeni TANIMLI DEĞİLSE kwarg olarak geçiyoruz.
-    Böylece manuel ENV override'lar daima kazanır.
-    """
+    """ENV > config.json > default sırası ile yükle."""
     json_overrides = _load_json_config()
     effective: dict[str, Any] = {
         k: v for k, v in json_overrides.items() if k.upper() not in os.environ
@@ -111,6 +211,5 @@ def get_settings() -> Settings:
 
 
 def reload_settings() -> Settings:
-    """Wizard config.json'ı yazdıktan sonra cache'i temizleyip yeniden oku."""
     get_settings.cache_clear()
     return get_settings()
