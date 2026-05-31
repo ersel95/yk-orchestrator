@@ -101,8 +101,10 @@ jobs:
           DMG_URL="https://github.com/${{ github.repository }}/releases/download/v$VERSION/YKOrchestrator-$VERSION.dmg"
           # Tag detached HEAD'den main'e geç ki appcast'i commit'leyebilelim
           # (app bu URL'i poll ediyor — feed her release'de güncel olmalı)
+          # release.sh project.yml'i SUPublicEDKey ile mutate ettiği için dirty state
+          # olabilir — force checkout ile temizleyip main'e geç.
           git fetch origin main
-          git checkout main
+          git checkout -f main
           python3 scripts/update_appcast.py \
             --version "$VERSION" --url "$DMG_URL" --length "$LEN" --signature "$SIG" \
             --notes-url "https://github.com/${{ github.repository }}/releases/tag/v$VERSION"
