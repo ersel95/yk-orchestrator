@@ -462,7 +462,7 @@ extension APIClient {
         let payload: [String: JSONValue]?
 
         /// JSON ortamında bilinmeyen tip içerebilir; primitive sarmalayıcı
-        enum JSONValue: Decodable, Hashable {
+        enum JSONValue: Codable, Hashable {
             case string(String), int(Int), double(Double), bool(Bool)
             case array([JSONValue]), object([String: JSONValue]), null
             init(from decoder: Decoder) throws {
@@ -475,6 +475,18 @@ extension APIClient {
                 if let v = try? c.decode([JSONValue].self)        { self = .array(v); return }
                 if let v = try? c.decode([String: JSONValue].self){ self = .object(v); return }
                 self = .null
+            }
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.singleValueContainer()
+                switch self {
+                case .null:           try c.encodeNil()
+                case .string(let v):  try c.encode(v)
+                case .int(let v):     try c.encode(v)
+                case .double(let v):  try c.encode(v)
+                case .bool(let v):    try c.encode(v)
+                case .array(let v):   try c.encode(v)
+                case .object(let v):  try c.encode(v)
+                }
             }
             var stringValue: String? {
                 if case .string(let s) = self { return s }
@@ -525,18 +537,224 @@ extension APIClient {
     }
 }
 
-// MARK: - Jira (sade)
+// MARK: - Jira (v1.1)
 
 extension APIClient {
-    struct JiraIssue: Decodable, Identifiable, Hashable {
-        let key: String
+
+    /// Normalize edilmiş Jira task — `jira_client.JiraClient.normalize()` formatı.
+    struct JiraTask: Decodable, Identifiable, Hashable {
+        let issue_key: String
+        let summary: String
+        let status: String
+        let priority: String?
+        let issue_type: String?
+        let assignee: String?
+        let sprint: String?
+        let description: String?
+        let url: String
+        let updated: String?
+        var id: String { issue_key }
+    }
+
+    /// Cache'lenmiş task — JiraIssueCache modeli ile aynı
+    struct JiraCachedIssue: Decodable, Identifiable, Hashable {
+        let issue_key: String
         let summary: String?
         let status: String?
+        let priority: String?
+        let issue_type: String?
         let assignee: String?
-        let updated: String?
-        var id: String { key }
+        let sprint: String?
+        let url: String?
+        var id: String { issue_key }
     }
-    func jiraIssues(projectId: Int?) async throws -> [JiraIssue] {
+
+    /// Detay endpoint'ten dönen raw issue (Jira REST format) — selektif alanlar
+    struct JiraIssueDetail: Decodable {
+        let key: String
+        let fields: JiraFields?
+        let transitions: [JiraTransition]?
+
+        struct JiraFields: Decodable {
+            let summary: String?
+            let description: String?
+            let labels: [String]?
+            let status: NamedRef?
+            let priority: NamedRef?
+            let issuetype: NamedRef?
+            let assignee: JiraUser?
+            let reporter: JiraUser?
+            let created: String?
+            let updated: String?
+        }
+        struct NamedRef: Decodable, Hashable { let name: String?; let id: String? }
+        struct JiraUser: Decodable, Hashable {
+            let name: String?
+            let displayName: String?
+            let emailAddress: String?
+            let accountId: String?
+        }
+    }
+    struct JiraTransition: Decodable, Identifiable, Hashable {
+        let id: String
+        let name: String
+        let to: JiraTransitionTo?
+        struct JiraTransitionTo: Decodable, Hashable {
+            let name: String?
+            let id: String?
+            let statusCategory: StatusCategoryRef?
+            struct StatusCategoryRef: Decodable, Hashable { let key: String?; let name: String? }
+        }
+    }
+
+    struct JiraUserDetail: Decodable, Hashable, Identifiable {
+        let name: String?
+        let displayName: String?
+        let emailAddress: String?
+        let accountId: String?
+        var id: String { name ?? accountId ?? displayName ?? UUID().uuidString }
+    }
+
+    // ── Reads ─────────────────────────────────────────────────────────
+
+    func listJiraTasks(
+        projectId: Int?,
+        jql: String? = nil,
+        assignee: String? = nil,
+        statusCategory: String? = nil,
+        status: String? = nil,
+        text: String? = nil,
+        label: String? = nil,
+        issueType: String? = nil,
+        maxResults: Int = 100
+    ) async throws -> [JiraTask] {
+        var q: [String: String?] = [
+            "project_id": projectId.map(String.init),
+            "max_results": String(maxResults),
+        ]
+        if let v = jql { q["jql"] = v }
+        if let v = assignee { q["assignee"] = v }
+        if let v = statusCategory { q["status_category"] = v }
+        if let v = status { q["status"] = v }
+        if let v = text { q["text"] = v }
+        if let v = label { q["label"] = v }
+        if let v = issueType { q["issue_type"] = v }
+        return try await get("api/jira/tasks", query: q)
+    }
+
+    func getJiraTask(_ key: String) async throws -> JiraIssueDetail {
+        try await get("api/jira/task/\(key)")
+    }
+
+    func getJiraTransitions(_ key: String) async throws -> [JiraTransition] {
+        try await get("api/jira/task/\(key)/transitions")
+    }
+
+    func assignableJiraUsers(project: String?, issueKey: String?, query: String = "") async throws -> [JiraUserDetail] {
+        var q: [String: String?] = ["q": query]
+        if let p = project { q["project"] = p }
+        if let k = issueKey { q["issue_key"] = k }
+        return try await get("api/jira/assignable", query: q)
+    }
+
+    // ── Mutations ────────────────────────────────────────────────────
+
+    struct JiraTransitionResult: Decodable {
+        let ok: Bool
+        let from: String?
+        let to: String?
+    }
+    func transitionJira(_ key: String, transitionId: String, comment: String? = nil, projectId: Int?) async throws -> JiraTransitionResult {
+        struct Body: Encodable {
+            let transition_id: String
+            let comment: String?
+            let project_id: Int?
+        }
+        return try await post("api/jira/task/\(key)/transition",
+                              body: Body(transition_id: transitionId, comment: comment, project_id: projectId))
+    }
+
+    /// Generic field update. fields direkt Jira REST format'ında.
+    /// Örn: ["summary": .string("yeni özet"), "assignee": .object(["name": .string("U0T..."]))]
+    func updateJiraTask(_ key: String, fields: [String: ActionEntry.JSONValue], projectId: Int?) async throws {
+        struct Empty: Decodable { let ok: Bool? }
+        struct Body: Encodable {
+            let fields: [String: ActionEntry.JSONValue]
+            let project_id: Int?
+        }
+        let _: Empty = try await patch("api/jira/task/\(key)",
+                                       body: Body(fields: fields, project_id: projectId))
+    }
+
+    /// Tip-güvenli kısa-yol — assignee ataması.
+    func setJiraAssignee(_ key: String, username: String?, projectId: Int?) async throws {
+        let value: ActionEntry.JSONValue
+        if let u = username {
+            value = .object(["name": .string(u)])
+        } else {
+            value = .object(["name": .null])  // assignee'yi temizle
+        }
+        try await updateJiraTask(key, fields: ["assignee": value], projectId: projectId)
+    }
+
+    /// Summary edit
+    func setJiraSummary(_ key: String, summary: String, projectId: Int?) async throws {
+        try await updateJiraTask(key, fields: ["summary": .string(summary)], projectId: projectId)
+    }
+
+    /// Description edit
+    func setJiraDescription(_ key: String, description: String, projectId: Int?) async throws {
+        try await updateJiraTask(key, fields: ["description": .string(description)], projectId: projectId)
+    }
+
+    /// Labels — tam liste (Jira PUT field semantics)
+    func setJiraLabels(_ key: String, labels: [String], projectId: Int?) async throws {
+        try await updateJiraTask(
+            key,
+            fields: ["labels": .array(labels.map { ActionEntry.JSONValue.string($0) })],
+            projectId: projectId
+        )
+    }
+
+    /// Priority — name ile
+    func setJiraPriority(_ key: String, priorityName: String, projectId: Int?) async throws {
+        try await updateJiraTask(
+            key,
+            fields: ["priority": .object(["name": .string(priorityName)])],
+            projectId: projectId
+        )
+    }
+
+    func addJiraComment(_ key: String, body: String, projectId: Int?) async throws {
+        struct Body: Encodable {
+            let body: String
+            let project_id: Int?
+        }
+        struct Empty: Decodable { let ok: Bool? }
+        let _: Empty = try await post("api/jira/task/\(key)/comment",
+                                      body: Body(body: body, project_id: projectId))
+    }
+
+    struct BranchResult: Decodable {
+        let ok: Bool
+        let branch: String?
+        let repo: String?
+        let workspace: String?
+        let source_branch: String?
+    }
+    func createBranchFromJira(_ key: String, sourceBranch: String = "develop", projectId: Int?) async throws -> BranchResult {
+        struct Body: Encodable {
+            let source_branch: String
+            let branch_prefix: String
+            let project_id: Int?
+        }
+        return try await post("api/jira/task/\(key)/branch",
+                              body: Body(source_branch: sourceBranch, branch_prefix: "feature", project_id: projectId))
+    }
+
+    // ── Legacy (cached liste — eski cache mantığı) ────────────────────
+
+    func jiraIssues(projectId: Int?) async throws -> [JiraCachedIssue] {
         try await get("api/jira/issues", query: ["project_id": projectId.map(String.init)])
     }
     func jiraRefresh(projectId: Int?) async throws {

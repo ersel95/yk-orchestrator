@@ -73,6 +73,88 @@ class JiraClient:
         jql = "assignee = currentUser() AND statusCategory != Done ORDER BY priority DESC, updated DESC"
         return await self.search_jql(jql)
 
+    # ─────────────────────────────────────────────────────────────────────
+    # CRUD + transitions (v1.1)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def get_issue(self, key: str, *, expand: list[str] | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if expand:
+            params["expand"] = ",".join(expand)
+        # transitions + renderedFields + names yararlı
+        params.setdefault("expand", "transitions,renderedFields,names,schema")
+        r = await self._client.get(f"/rest/api/2/issue/{key}", params=params)
+        r.raise_for_status()
+        return r.json()
+
+    async def get_transitions(self, key: str) -> list[dict[str, Any]]:
+        r = await self._client.get(f"/rest/api/2/issue/{key}/transitions")
+        r.raise_for_status()
+        return r.json().get("transitions", [])
+
+    async def do_transition(
+        self, key: str, transition_id: str, *, comment: str | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> None:
+        body: dict[str, Any] = {"transition": {"id": transition_id}}
+        if comment:
+            body["update"] = {"comment": [{"add": {"body": comment}}]}
+        if fields:
+            body["fields"] = fields
+        r = await self._client.post(f"/rest/api/2/issue/{key}/transitions", json=body)
+        if r.status_code >= 400:
+            log.warning(f"Jira transition hatası ({r.status_code}): {r.text[:300]}")
+        r.raise_for_status()
+
+    async def update_issue(self, key: str, fields: dict[str, Any]) -> None:
+        """Issue field'larını günceller.
+
+        `fields` direkt Jira REST format'ında (örn {"summary": "...", "assignee": {"name": "U0T..."}}).
+        Custom field'lar customfield_XXXXX key'leriyle.
+        """
+        r = await self._client.put(f"/rest/api/2/issue/{key}", json={"fields": fields})
+        if r.status_code >= 400:
+            log.warning(f"Jira update hatası ({r.status_code}): {r.text[:300]}")
+        r.raise_for_status()
+
+    async def add_comment(self, key: str, body: str) -> dict[str, Any]:
+        r = await self._client.post(
+            f"/rest/api/2/issue/{key}/comment", json={"body": body}
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def assignable_users(
+        self, *, project_key: str | None = None, issue_key: str | None = None,
+        query: str = "", max_results: int = 50
+    ) -> list[dict[str, Any]]:
+        """Issue'ye atanabilir kullanıcılar.
+
+        Jira Server'da ya `project` ya da `issueKey` parametresi gerekli.
+        """
+        params: dict[str, Any] = {"maxResults": max_results}
+        if query:
+            # Server kabul ediyor: 'username' veya 'query' parametresi (sürüm farkı)
+            params["username"] = query
+            params["query"] = query
+        if issue_key:
+            params["issueKey"] = issue_key
+        elif project_key:
+            params["project"] = project_key
+        r = await self._client.get("/rest/api/2/user/assignable/search", params=params)
+        r.raise_for_status()
+        return r.json()
+
+    async def status_categories(self) -> list[dict[str, Any]]:
+        r = await self._client.get("/rest/api/2/statuscategory")
+        r.raise_for_status()
+        return r.json()
+
+    async def myself(self) -> dict[str, Any]:
+        r = await self._client.get("/rest/api/2/myself")
+        r.raise_for_status()
+        return r.json()
+
     async def my_done_yesterday(self, target_date: date | None = None) -> list[dict[str, Any]]:
         d = target_date or (date.today() - timedelta(days=1))
         # Jira Server bazen DURING formatına nazlı; updated >= "tarih" + status terminal pattern'i

@@ -309,6 +309,103 @@ class BitbucketClient:
         except Exception:
             return {"diffs": [], "raw_text": r.text[:5000]}
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Branch oluşturma (v1.1 — Jira'dan tetikleniyor)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def create_branch(
+        self,
+        *,
+        branch_name: str,
+        source_branch: str = "develop",
+        workspace: str | None = None,
+        repo: str | None = None,
+    ) -> dict[str, Any]:
+        """Bitbucket Server'da yeni bir branch yaratır.
+
+        Endpoint: POST /rest/branch-utils/1.0/projects/{KEY}/repos/{slug}/branches
+        Body: {"name": "feature/X-1234", "startPoint": "refs/heads/develop"}
+        Cevap: {"id": "refs/heads/feature/...", "displayId": "feature/...", "latestCommit": "..."}
+        """
+        ws = self._ws(workspace)
+        repo = repo or self.default_repo
+        if not repo:
+            return {"ok": False, "error": "repo belirtilmedi"}
+        url = f"/rest/branch-utils/1.0/projects/{ws}/repos/{repo}/branches"
+        body = {"name": branch_name, "startPoint": f"refs/heads/{source_branch}"}
+        r = await self._client.post(url, json=body)
+        if r.status_code >= 400:
+            return {
+                "ok": False,
+                "error": f"HTTP {r.status_code}: {r.text[:300]}",
+            }
+        return {"ok": True, **r.json()}
+
+    async def get_branches(
+        self,
+        *,
+        workspace: str | None = None,
+        repo: str | None = None,
+        filter_text: str = "",
+        limit: int = 100,
+        details: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Repo'daki branch listesini döner.
+
+        details=True ile her branch için ahead/behind ve son commit dahil olur.
+        """
+        ws = self._ws(workspace)
+        repo = repo or self.default_repo
+        url = f"/rest/api/1.0/projects/{ws}/repos/{repo}/branches"
+        params: dict[str, Any] = {"limit": limit}
+        if filter_text:
+            params["filterText"] = filter_text
+        if details:
+            params["details"] = "true"
+        r = await self._client.get(url, params=params)
+        r.raise_for_status()
+        return r.json().get("values", [])
+
+    async def get_commits(
+        self,
+        *,
+        workspace: str | None = None,
+        repo: str | None = None,
+        branch: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        path: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Repo commit listesi. branch='refs/heads/develop' veya sadece 'develop'."""
+        ws = self._ws(workspace)
+        repo = repo or self.default_repo
+        url = f"/rest/api/1.0/projects/{ws}/repos/{repo}/commits"
+        params: dict[str, Any] = {"limit": limit}
+        if branch:
+            params["until"] = branch if branch.startswith("refs/") else f"refs/heads/{branch}"
+        if since:
+            params["since"] = since
+        if path:
+            params["path"] = path
+        r = await self._client.get(url, params=params)
+        r.raise_for_status()
+        return r.json().get("values", [])
+
+    async def get_tags(
+        self,
+        *,
+        workspace: str | None = None,
+        repo: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        ws = self._ws(workspace)
+        repo = repo or self.default_repo
+        url = f"/rest/api/1.0/projects/{ws}/repos/{repo}/tags"
+        r = await self._client.get(url, params={"limit": limit})
+        r.raise_for_status()
+        return r.json().get("values", [])
+
     @staticmethod
     def normalize(pr: dict[str, Any], my_username: str) -> dict[str, Any]:
         from datetime import datetime, timezone

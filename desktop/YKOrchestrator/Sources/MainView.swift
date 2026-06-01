@@ -6,15 +6,16 @@ struct MainView: View {
     @EnvironmentObject private var sidecar: SidecarManager
     @EnvironmentObject private var config: ConfigStore
 
-    @State private var selected: Tab? = Tab.pullRequests
+    @State private var selected: Tab? = Tab.jira
     @State private var activeProjectId: Int? = nil
     @State private var projects: [APIClient.ProjectInfo] = []
     @State private var loadError: String?
 
     enum Tab: String, Hashable, CaseIterable {
-        case pullRequests, chat, testflight, activity, settings
+        case jira, pullRequests, chat, testflight, activity, settings
         var title: String {
             switch self {
+            case .jira:         return "Jira"
             case .pullRequests: return "Pull Request'ler"
             case .chat:         return "Chat"
             case .testflight:   return "TestFlight"
@@ -24,6 +25,7 @@ struct MainView: View {
         }
         var systemImage: String {
             switch self {
+            case .jira:         return "list.bullet.clipboard"
             case .pullRequests: return "arrow.triangle.pull"
             case .chat:         return "bubble.left.and.bubble.right"
             case .testflight:   return "paperplane"
@@ -99,7 +101,8 @@ struct MainView: View {
     private var detailView: some View {
         if let base = sidecar.apiBaseURL {
             let client = APIClient(baseURL: base)
-            switch selected ?? .pullRequests {
+            switch selected ?? .jira {
+            case .jira:         JiraView(client: client, projectId: activeProjectId)
             case .pullRequests: PRListView(client: client, projectId: activeProjectId)
             case .chat:         ChatView(client: client, projectId: activeProjectId)
             case .testflight:   TestFlightView(client: client, projectId: activeProjectId)
