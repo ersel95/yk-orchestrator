@@ -246,8 +246,18 @@ struct SetupWizardView: View {
                 SecureField("HTTP token", text: $bitbucketToken)
                     .textFieldStyle(.roundedBorder)
             }
-            field("Workspace / proje key", placeholder: "COSADC",
+            field("Project Key", placeholder: "COSADC",
                   text: $draft.bitbucket_workspace)
+            HelpBox(
+                title: "Project Key nedir, nereden bulurum?",
+                bullets: [
+                    "Bitbucket Server'da her repo bir 'project' altında oturur — project key bu kapsayıcının kısa kodudur (büyük harfler).",
+                    "Bulma: Bitbucket'ta repo'yu aç → URL'e bak: /projects/<KEY>/repos/<repo-adı>/browse",
+                    "Yapı Kredi iOS repo'ları: COSADC (az-adc-ios, nl-adc-ios buradadır).",
+                    "Birden çok proje varsa: en sık kullandığını yaz; her proje için ayrıntıyı sonraki adımda tanımlayacaksın."
+                ],
+                link: nil
+            )
             field("Varsayılan repo", placeholder: "az-adc-ios",
                   text: $draft.bitbucket_default_repo)
             ValidationBanner(state: bitbucketValidation)
