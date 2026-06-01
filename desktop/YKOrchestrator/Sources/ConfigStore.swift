@@ -177,16 +177,18 @@ enum LLMRole: String, CaseIterable, Identifiable {
 /// AppConfig.providers içine eklenir.
 enum ProviderTemplate: String, CaseIterable, Identifiable {
     case lm_studio
-    case anthropic
+    case claude_code     // Claude — subscription OAuth via `claude` CLI (API key gerekmez)
+    case anthropic       // Claude — direkt API key ile (ücretli, console.anthropic.com)
     case openai
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .lm_studio: return "LM Studio (lokal)"
-        case .anthropic: return "Anthropic Claude"
-        case .openai:    return "OpenAI"
+        case .lm_studio:   return "LM Studio (lokal)"
+        case .claude_code: return "Claude (abonelik — Claude Code CLI)"
+        case .anthropic:   return "Anthropic Claude (API key)"
+        case .openai:      return "OpenAI"
         }
     }
 
@@ -194,35 +196,43 @@ enum ProviderTemplate: String, CaseIterable, Identifiable {
         switch self {
         case .lm_studio, .openai: return "openai_compatible"
         case .anthropic:          return "anthropic"
+        case .claude_code:        return "claude_code"
         }
     }
 
     var defaultBaseURL: String {
         switch self {
-        case .lm_studio: return "http://127.0.0.1:1234/v1"
-        case .openai:    return "https://api.openai.com/v1"
-        case .anthropic: return ""
+        case .lm_studio:   return "http://127.0.0.1:1234/v1"
+        case .openai:      return "https://api.openai.com/v1"
+        case .anthropic:   return ""
+        case .claude_code: return ""    // PATH'ten `claude` aranır
         }
     }
 
+    /// API key gerektirir mi? (claude_code OAuth ile, lm_studio'da gerek yok)
     var requiresAPIKey: Bool {
-        self != .lm_studio
+        switch self {
+        case .anthropic, .openai: return true
+        case .lm_studio, .claude_code: return false
+        }
     }
 
     var apiKeyEnvName: String {
         switch self {
-        case .lm_studio: return "LLM_API_KEY"
-        case .anthropic: return "ANTHROPIC_API_KEY"
-        case .openai:    return "OPENAI_API_KEY"
+        case .lm_studio:   return "LLM_API_KEY"
+        case .anthropic:   return "ANTHROPIC_API_KEY"
+        case .openai:      return "OPENAI_API_KEY"
+        case .claude_code: return ""
         }
     }
 
     /// Keychain'de saklanacak key adı (KeychainStore.knownKeys ile uyumlu)
     var keychainKey: String {
         switch self {
-        case .lm_studio: return "llm_api_key"
-        case .anthropic: return "anthropic_api_key"
-        case .openai:    return "openai_api_key"
+        case .lm_studio:   return "llm_api_key"
+        case .anthropic:   return "anthropic_api_key"
+        case .openai:      return "openai_api_key"
+        case .claude_code: return ""
         }
     }
 
@@ -236,7 +246,7 @@ enum ProviderTemplate: String, CaseIterable, Identifiable {
                 "qwen2.5-coder-32b-instruct",
                 "text-embedding-nomic-embed-text-v1.5",
             ]
-        case .anthropic:
+        case .claude_code, .anthropic:
             return [
                 "claude-opus-4-7",
                 "claude-sonnet-4-6",

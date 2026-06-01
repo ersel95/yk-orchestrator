@@ -19,7 +19,7 @@ from app.core.paths import (
 # Provider + Role config nested modelleri
 # ─────────────────────────────────────────────────────────────────────────
 
-ProviderKind = Literal["openai_compatible", "anthropic"]
+ProviderKind = Literal["openai_compatible", "anthropic", "claude_code"]
 
 
 class ProviderConfig(BaseModel):

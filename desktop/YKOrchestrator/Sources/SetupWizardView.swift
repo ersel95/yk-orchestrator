@@ -513,6 +513,20 @@ private struct ProviderCard: View {
                     }
                     Text("LM Studio'yu aç, modeli yükle, Local Server (port 1234) çalışır halde olmalı.")
                         .font(.footnote).foregroundStyle(.secondary)
+
+                } else if template == .claude_code {
+                    Text("API key gerekmez — terminalden `claude login` ile aboneliğinle (Pro/Max) giriş yapmış olman yeter. Maliyet Anthropic abonelik limitlerine sayılır.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    HelpBox(
+                        title: "Nasıl giriş yaparım?",
+                        bullets: [
+                            "Terminal aç: brew install --cask claude-code (yüklü değilse).",
+                            "`claude login` çalıştır → tarayıcıda Claude.ai oturumunla onayla.",
+                            "`claude --version` ve `claude -p 'merhaba'` ile test et."
+                        ],
+                        link: ("Claude Code docs", "https://docs.claude.com/en/docs/claude-code/overview")
+                    )
+
                 } else {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("API Key").font(.callout).foregroundStyle(.secondary)
