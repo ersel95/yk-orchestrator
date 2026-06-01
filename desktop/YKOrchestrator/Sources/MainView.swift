@@ -6,7 +6,7 @@ struct MainView: View {
     @EnvironmentObject private var sidecar: SidecarManager
     @EnvironmentObject private var config: ConfigStore
 
-    @State private var selected: Tab? = .pullRequests
+    @State private var selected: Tab? = Tab.pullRequests
     @State private var activeProjectId: Int? = nil
     @State private var projects: [APIClient.ProjectInfo] = []
     @State private var loadError: String?
@@ -73,11 +73,11 @@ struct MainView: View {
             .padding(14)
             Divider()
 
-            // Tabs
+            // Tabs — List selection ile detail view doğrudan tetiklenir.
+            // NavigationLink kullanma; iki paradigma karışırsa detail boş kalır.
             List(Tab.allCases, id: \.self, selection: $selected) { tab in
-                NavigationLink(value: tab) {
-                    Label(tab.title, systemImage: tab.systemImage)
-                }
+                Label(tab.title, systemImage: tab.systemImage)
+                    .tag(Optional(tab))
             }
             .listStyle(.sidebar)
 
