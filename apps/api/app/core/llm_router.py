@@ -25,6 +25,7 @@ from app.core.config import (
 from app.core.logging import get_logger
 from app.integrations.providers import (
     AnthropicProvider,
+    ClaudeCodeProvider,
     LLMProvider,
     OpenAICompatibleProvider,
 )
@@ -46,6 +47,12 @@ def _build_provider(cfg: ProviderConfig) -> LLMProvider:
         if not cfg.api_key:
             raise RuntimeError(f"Provider {cfg.id}: api_key boş, çağrı yapılamaz")
         return AnthropicProvider(id=cfg.id, api_key=cfg.api_key, timeout=cfg.timeout_seconds)
+    if cfg.kind == "claude_code":
+        # API key gerekmez; `claude login` ile OAuth alınmış olmalı.
+        # cli_path config'te base_url alanında verilebilir (özel kurulum), yoksa
+        # PATH'ten `claude` aranır.
+        cli = cfg.base_url or "claude"
+        return ClaudeCodeProvider(id=cfg.id, cli_path=cli, timeout=cfg.timeout_seconds)
     raise ValueError(f"Bilinmeyen provider kind: {cfg.kind}")
 
 
