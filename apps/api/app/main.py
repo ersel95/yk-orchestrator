@@ -18,6 +18,7 @@ from app.routers import (
     stream,
     testflight,
     transcript,
+    wizard,
 )
 
 setup_logging()
@@ -58,6 +59,7 @@ app.include_router(settings_router.router)
 app.include_router(stream.router)
 app.include_router(llm_router.router)
 app.include_router(projects.router)
+app.include_router(wizard.router)
 
 
 def run() -> None:

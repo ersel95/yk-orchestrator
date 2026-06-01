@@ -20,6 +20,21 @@ struct SetupWizardView: View {
 
     @State private var saveError: String?
 
+    // Jira/Bitbucket connection validation state
+    @State private var jiraValidation: ValidationState = .idle
+    @State private var bitbucketValidation: ValidationState = .idle
+
+    enum ValidationState: Equatable {
+        case idle
+        case validating
+        case ok(String)
+        case error(String)
+
+        var isValidating: Bool { if case .validating = self { return true } else { return false } }
+        var isOK: Bool { if case .ok = self { return true } else { return false } }
+        var isError: Bool { if case .error = self { return true } else { return false } }
+    }
+
     enum Step: Int, CaseIterable {
         case welcome, jira, bitbucket, providers, roles, projects, done
         var title: String {
@@ -151,7 +166,19 @@ struct SetupWizardView: View {
     }
 
     // ─── Jira ─────────────────────────────────────────────────────
+    /// Jira/Bitbucket alanlarından biri değiştiğinde mevcut OK işaretini
+    /// düşür — kullanıcı eski doğrulamayla yanlış değerlerle geçemesin.
+    private func invalidateJiraValidation() { if jiraValidation != .idle { jiraValidation = .idle } }
+    private func invalidateBitbucketValidation() { if bitbucketValidation != .idle { bitbucketValidation = .idle } }
+
     private var jiraStep: some View {
+        jiraStepInner
+            .onChange(of: draft.jira_base_url) { _ in invalidateJiraValidation() }
+            .onChange(of: draft.jira_email)    { _ in invalidateJiraValidation() }
+            .onChange(of: jiraToken)            { _ in invalidateJiraValidation() }
+    }
+
+    private var jiraStepInner: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Jira bağlantısı")
             HelpBox(
@@ -175,6 +202,7 @@ struct SetupWizardView: View {
             }
             field("Proje anahtarları (virgüllü)", placeholder: "CAPYBARZ,MOLENARS",
                   text: $draft.jira_project_keys)
+            ValidationBanner(state: jiraValidation)
             Text("Token macOS Keychain'e yazılır, config dosyasına bırakılmaz.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
@@ -182,6 +210,15 @@ struct SetupWizardView: View {
 
     // ─── Bitbucket ────────────────────────────────────────────────
     private var bitbucketStep: some View {
+        bitbucketStepInner
+            .onChange(of: draft.bitbucket_base_url) { _ in invalidateBitbucketValidation() }
+            .onChange(of: draft.bitbucket_username) { _ in invalidateBitbucketValidation() }
+            .onChange(of: bitbucketToken)            { _ in invalidateBitbucketValidation() }
+            .onChange(of: draft.bitbucket_workspace) { _ in invalidateBitbucketValidation() }
+            .onChange(of: draft.bitbucket_default_repo) { _ in invalidateBitbucketValidation() }
+    }
+
+    private var bitbucketStepInner: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Bitbucket Server bağlantısı")
             HelpBox(
@@ -207,6 +244,7 @@ struct SetupWizardView: View {
                   text: $draft.bitbucket_workspace)
             field("Varsayılan repo", placeholder: "az-adc-ios",
                   text: $draft.bitbucket_default_repo)
+            ValidationBanner(state: bitbucketValidation)
         }
     }
 
@@ -358,6 +396,10 @@ struct SetupWizardView: View {
         switch step {
         case .done:     return "Başlat"
         case .projects: return "Bitir"
+        case .jira where jiraValidation.isValidating: return "Doğrulanıyor..."
+        case .bitbucket where bitbucketValidation.isValidating: return "Doğrulanıyor..."
+        case .jira:     return jiraValidation.isOK ? "İleri" : "Bağlantıyı test et ve devam"
+        case .bitbucket: return bitbucketValidation.isOK ? "İleri" : "Bağlantıyı test et ve devam"
         default:        return "İleri"
         }
     }
@@ -365,12 +407,32 @@ struct SetupWizardView: View {
     private var canAdvance: Bool {
         switch step {
         case .providers: return !selectedProviders.isEmpty
+        case .jira:      return !jiraValidation.isValidating
+        case .bitbucket: return !bitbucketValidation.isValidating
         default: return true
         }
     }
 
     private func advance() {
         if step == .done { return }
+
+        // Jira/Bitbucket: önce bağlantı doğrulaması, başarılıysa ilerle
+        if step == .jira {
+            if jiraValidation.isOK {
+                withAnimation { step = .bitbucket }
+            } else {
+                Task { await validateJira() }
+            }
+            return
+        }
+        if step == .bitbucket {
+            if bitbucketValidation.isOK {
+                withAnimation { step = .providers }
+            } else {
+                Task { await validateBitbucket() }
+            }
+            return
+        }
 
         // Tek provider seçildiyse Roller adımını atla:
         // tüm rolleri o provider'a auto-assign et, direkt Projeler'e geç.
@@ -387,6 +449,77 @@ struct SetupWizardView: View {
             } else {
                 withAnimation { step = next }
             }
+        }
+    }
+
+    // MARK: - Connection validation
+
+    private func validateJira() async {
+        guard let base = sidecar.apiBaseURL else {
+            jiraValidation = .error("Backend henüz hazır değil")
+            return
+        }
+        jiraValidation = .validating
+        let payload: [String: Any] = [
+            "base_url": draft.jira_base_url,
+            "email": draft.jira_email,
+            "token": jiraToken,
+            "project_keys": draft.jira_project_keys,
+        ]
+        let result = await postJSON(base.appendingPathComponent("api/wizard/test-jira"), body: payload)
+        await MainActor.run {
+            self.jiraValidation = result
+            // Otomatik ilerleme — başarılıysa kullanıcı tekrar İleri tıklamasın
+            if case .ok = result {
+                withAnimation { self.step = .bitbucket }
+            }
+        }
+    }
+
+    private func validateBitbucket() async {
+        guard let base = sidecar.apiBaseURL else {
+            bitbucketValidation = .error("Backend henüz hazır değil")
+            return
+        }
+        bitbucketValidation = .validating
+        let payload: [String: Any] = [
+            "base_url": draft.bitbucket_base_url,
+            "username": draft.bitbucket_username,
+            "token": bitbucketToken,
+            "workspace": draft.bitbucket_workspace,
+            "repo": draft.bitbucket_default_repo,
+        ]
+        let result = await postJSON(base.appendingPathComponent("api/wizard/test-bitbucket"), body: payload)
+        await MainActor.run {
+            self.bitbucketValidation = result
+            if case .ok = result {
+                withAnimation { self.step = .providers }
+            }
+        }
+    }
+
+    private func postJSON(_ url: URL, body: [String: Any]) async -> ValidationState {
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 12
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse else {
+                return .error("Geçersiz yanıt")
+            }
+            if http.statusCode >= 500 {
+                return .error("Backend hatası HTTP \(http.statusCode)")
+            }
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let okBool = (json["ok"] as? Bool) ?? false
+                let message = (json["message"] as? String) ?? "?"
+                return okBool ? .ok(message) : .error(message)
+            }
+            return .error("Yanıt parse edilemedi")
+        } catch {
+            return .error("İstek başarısız: \(error.localizedDescription)")
         }
     }
 
@@ -687,5 +820,49 @@ private struct ProjectCard: View {
         .padding(12)
         .background(Color.secondary.opacity(0.06))
         .cornerRadius(8)
+    }
+}
+
+/// Jira/Bitbucket bağlantı doğrulama mesajını gösteren inline banner.
+private struct ValidationBanner: View {
+    let state: SetupWizardView.ValidationState
+
+    var body: some View {
+        switch state {
+        case .idle:
+            EmptyView()
+        case .validating:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("Bağlantı doğrulanıyor...").font(.callout).foregroundStyle(.secondary)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08))
+            .cornerRadius(8)
+        case .ok(let msg):
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.body)
+                Text(msg).font(.callout).foregroundStyle(.primary)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.green.opacity(0.10))
+            .cornerRadius(8)
+        case .error(let msg):
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "xmark.octagon.fill")
+                    .foregroundStyle(.red)
+                    .font(.body)
+                Text(msg).font(.callout).foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.red.opacity(0.10))
+            .cornerRadius(8)
+        }
     }
 }
