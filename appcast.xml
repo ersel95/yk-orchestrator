@@ -5,6 +5,15 @@
     <link>https://github.com/ersel95/yk-orchestrator</link>
     <description>YK Orchestrator updates</description>
     <item>
+      <title>YK Orchestrator 0.7.0</title>
+      <pubDate>Mon, 01 Jun 2026 10:48:48 +0000</pubDate>
+      <sparkle:version>25</sparkle:version>
+      <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/ersel95/yk-orchestrator/releases/tag/v0.7.0</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/ersel95/yk-orchestrator/releases/download/v0.7.0/YKOrchestrator-0.7.0.dmg" length="97230649" type="application/octet-stream" sparkle:edSignature="5f6XlhwqnqZ9kZER4wOUNywzTA+6gscE4F8A03k2CyMdvOXpYK7sW6ueUMHZCJZTdVl3rlRPizMbKlGXNpL1Bw==" />
+    </item>
+    <item>
       <title>YK Orchestrator 0.6.2</title>
       <pubDate>Mon, 01 Jun 2026 10:42:47 +0000</pubDate>
       <sparkle:version>23</sparkle:version>
