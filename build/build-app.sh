@@ -2,14 +2,13 @@
 #
 # End-to-end .app + .dmg build pipeline.
 #
-# Adımlar:
-#   1) build-backend.sh   → PyInstaller onedir
-#   2) build-dashboard.sh → Next.js static export
-#   3) Resources kopyala  → desktop/YKOrchestrator/Resources/{backend,dashboard}
-#   4) xcodebuild archive → Release .app
-#   5) Code sign (Developer ID Application) + entitlements
-#   6) (opsiyonel) Notarize + staple
-#   7) hdiutil ile .dmg üret + imza + (notarize)
+# Adımlar (v0.9.0+ tam native UI, dashboard yok):
+#   1) build-backend.sh → PyInstaller onedir
+#   2) Resources kopyala → desktop/YKOrchestrator/Resources/backend
+#   3) xcodebuild archive → Release .app (SwiftUI native UI)
+#   4) Code sign (Developer ID Application) + entitlements
+#   5) (opsiyonel) Notarize + staple
+#   6) hdiutil ile .dmg üret + imza + (notarize)
 #
 # ENV gereksinimleri (notarize için):
 #   SIGNING_IDENTITY="Developer ID Application: Ersel Tarhan (XZAJKFLEF8)"
@@ -17,7 +16,7 @@
 #   NOTARYTOOL_PROFILE="ykorch"   # `xcrun notarytool store-credentials ykorch` ile önceden kurulmalı
 #
 # SKIP flag'leri (debug için):
-#   SKIP_BACKEND=1, SKIP_DASHBOARD=1, SKIP_NOTARIZE=1, SKIP_DMG=1
+#   SKIP_BACKEND=1, SKIP_NOTARIZE=1, SKIP_DMG=1
 #
 set -euo pipefail
 
@@ -53,45 +52,32 @@ mkdir -p "${RELEASE_DIR}"
 # 1) Backend
 # ---------------------------------------------------------------------------
 if [[ "${SKIP_BACKEND:-0}" != "1" ]]; then
-  echo "==> [1/7] Backend (PyInstaller onedir)"
+  echo "==> [1/6] Backend (PyInstaller onedir)"
   bash "${BUILD_DIR}/build-backend.sh"
 else
-  echo "==> [1/7] Backend SKIPPED"
+  echo "==> [1/6] Backend SKIPPED"
 fi
 
 # ---------------------------------------------------------------------------
-# 2) Dashboard
-# ---------------------------------------------------------------------------
-if [[ "${SKIP_DASHBOARD:-0}" != "1" ]]; then
-  echo ""
-  echo "==> [2/7] Dashboard (Next.js static export)"
-  bash "${BUILD_DIR}/build-dashboard.sh"
-else
-  echo "==> [2/7] Dashboard SKIPPED"
-fi
-
-# ---------------------------------------------------------------------------
-# 3) Resources kopyala
+# 2) Resources kopyala (v0.9.0+ dashboard yok — UI native Swift)
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> [3/7] Resources hazırlanıyor"
+echo "==> [2/6] Resources hazırlanıyor"
 RESOURCES_DIR="${DESKTOP_DIR}/YKOrchestrator/Resources"
-rm -rf "${RESOURCES_DIR}/backend" "${RESOURCES_DIR}/dashboard"
+rm -rf "${RESOURCES_DIR}/backend"
 mkdir -p "${RESOURCES_DIR}"
 
 cp -R "${DIST_DIR}/ykorch-api" "${RESOURCES_DIR}/backend"
-cp -R "${DIST_DIR}/dashboard"  "${RESOURCES_DIR}/dashboard"
 echo "    Backend:   $(du -sm "${RESOURCES_DIR}/backend" | awk '{print $1}') MB"
-echo "    Dashboard: $(du -sm "${RESOURCES_DIR}/dashboard" | awk '{print $1}') MB"
 
 # project.yml mevcut Resources/ klasörünü zaten resource olarak işliyor
 ( cd "${DESKTOP_DIR}" && xcodegen generate >/dev/null )
 
 # ---------------------------------------------------------------------------
-# 4) Archive + export
+# 3) Archive + export
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> [4/7] Xcode archive (Release)"
+echo "==> [3/6] Xcode archive (Release)"
 rm -rf "${ARCHIVE_PATH}" "${EXPORT_PATH}"
 
 xcodebuild \
@@ -130,24 +116,23 @@ if [[ ! -d "${APP_PATH}" ]]; then
   exit 1
 fi
 
-# Resources/backend ve Resources/dashboard'u .app/Contents/Resources/'a kopyala.
+# Resources/backend'i .app/Contents/Resources/'a kopyala.
 # xcodegen folder reference olarak ekliyor ama xcodebuild recursive kopyalamıyor;
 # codesign aşamasından ÖNCE manuel kopya en garantili yol.
 APP_RES_DIR="${APP_PATH}/Contents/Resources"
 mkdir -p "${APP_RES_DIR}"
-rm -rf "${APP_RES_DIR}/backend" "${APP_RES_DIR}/dashboard"
-cp -R "${DESKTOP_DIR}/YKOrchestrator/Resources/backend"   "${APP_RES_DIR}/backend"
-cp -R "${DESKTOP_DIR}/YKOrchestrator/Resources/dashboard" "${APP_RES_DIR}/dashboard"
+rm -rf "${APP_RES_DIR}/backend"
+cp -R "${DESKTOP_DIR}/YKOrchestrator/Resources/backend" "${APP_RES_DIR}/backend"
 
 APP_SIZE=$(du -sm "${APP_PATH}" | awk '{print $1}')
 echo "    App:       ${APP_PATH}"
-echo "    Boyut:     ${APP_SIZE} MB (backend + dashboard dahil)"
+echo "    Boyut:     ${APP_SIZE} MB (backend dahil)"
 
 # ---------------------------------------------------------------------------
-# 5) Code sign (deep, hardened runtime)
+# 4) Code sign (deep, hardened runtime)
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> [5/7] Code sign (deep, hardened runtime)"
+echo "==> [4/6] Code sign (deep, hardened runtime)"
 ENTITLEMENTS="${DESKTOP_DIR}/YKOrchestrator/YKOrchestrator.entitlements"
 
 # Önce iç binary: ykorch-api ve PyInstaller'ın gömdüğü tüm .so / .dylib'leri
@@ -188,11 +173,11 @@ codesign --force --deep --sign "${SIGNING_IDENTITY}" --timestamp \
 codesign --verify --deep --strict --verbose=2 "${APP_PATH}" 2>&1 | tail -5
 
 # ---------------------------------------------------------------------------
-# 6) Notarize + staple (opsiyonel)
+# 5) Notarize + staple (opsiyonel)
 # ---------------------------------------------------------------------------
 if [[ "${SKIP_NOTARIZE:-0}" != "1" ]]; then
   echo ""
-  echo "==> [6/7] Notarize"
+  echo "==> [5/6] Notarize"
   if [[ -z "${NOTARYTOOL_PROFILE:-}" ]]; then
     echo "    NOTARYTOOL_PROFILE env tanımlı değil → SKIP"
     echo "    Tek seferlik kurulum:"
@@ -208,15 +193,15 @@ if [[ "${SKIP_NOTARIZE:-0}" != "1" ]]; then
     rm -f "${NOTARIZE_ZIP}"
   fi
 else
-  echo "==> [6/7] Notarize SKIPPED"
+  echo "==> [5/6] Notarize SKIPPED"
 fi
 
 # ---------------------------------------------------------------------------
-# 7) DMG
+# 6) DMG
 # ---------------------------------------------------------------------------
 if [[ "${SKIP_DMG:-0}" != "1" ]]; then
   echo ""
-  echo "==> [7/7] DMG paketleniyor"
+  echo "==> [6/6] DMG paketleniyor"
   rm -f "${DMG_PATH}"
 
   # Geçici staging klasörü: .app + Applications shortcut
@@ -248,7 +233,7 @@ if [[ "${SKIP_DMG:-0}" != "1" ]]; then
   echo "    DMG:       ${DMG_PATH}"
   echo "    Boyut:     ${DMG_MB} MB"
 else
-  echo "==> [7/7] DMG SKIPPED"
+  echo "==> [6/6] DMG SKIPPED"
 fi
 
 echo ""

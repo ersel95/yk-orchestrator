@@ -3,7 +3,7 @@ import SwiftUI
 /// Uygulama açılış orkestrasyonu:
 /// 1) Wizard tamamlanmamışsa SetupWizardView göster
 /// 2) Sidecar (ykorch-api) henüz hazır değilse SplashView göster
-/// 3) Hazır olunca DashboardView (WKWebView) yükle
+/// 3) Hazır olunca MainView (native SwiftUI dashboard) yükle
 struct RootView: View {
     @EnvironmentObject private var sidecar: SidecarManager
     @EnvironmentObject private var config: ConfigStore
@@ -13,8 +13,8 @@ struct RootView: View {
             if !config.isConfigured {
                 SetupWizardView()
                     .transition(.opacity)
-            } else if sidecar.state == .ready, let base = sidecar.apiBaseURL {
-                DashboardView(apiBase: base)
+            } else if sidecar.state == .ready {
+                MainView()
                     .transition(.opacity)
             } else {
                 SplashView(state: sidecar.state, lastError: sidecar.lastError)

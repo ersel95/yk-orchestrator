@@ -39,20 +39,16 @@ DMG="${DIST}/${APP_BASENAME}-${VERSION}.dmg"
 rm -rf "${DIST}" "${RELEASE_DIR}"
 mkdir -p "${DIST}" "${RELEASE_DIR}"
 
-# 1) Backend (PyInstaller onedir) + Dashboard (Next.js static export) build
+# 1) Backend (PyInstaller onedir) build — v0.9.0+ dashboard yok, UI tamamen native Swift
 echo "→ Backend build"
 bash build/build-backend.sh
-echo ""
-echo "→ Dashboard build"
-bash build/build-dashboard.sh
 
-# 2) Resources hazırla — desktop/YKOrchestrator/Resources/{backend,dashboard}
+# 2) Resources hazırla — desktop/YKOrchestrator/Resources/backend
 echo ""
 echo "→ Resources hazırlanıyor"
 RES_SRC="desktop/YKOrchestrator/Resources"
-rm -rf "${RES_SRC}/backend" "${RES_SRC}/dashboard"
+rm -rf "${RES_SRC}/backend"
 cp -R build/dist/ykorch-api "${RES_SRC}/backend"
-cp -R build/dist/dashboard  "${RES_SRC}/dashboard"
 
 # 3) project.yml içine SUPublicEDKey'i CI'dan inject et (Info.plist'e gidecek).
 #    project.yml'deki placeholder gerçek değerle override edilir; xcodegen
@@ -124,17 +120,15 @@ if [[ ! -d "${APP}" ]]; then
   exit 1
 fi
 
-# 7) Resources/backend ve Resources/dashboard'u .app içine kopyala
+# 7) Resources/backend + AppIcon'u .app içine kopyala
 #    (xcodegen folder reference olarak ekliyor ama xcodebuild içeriği copy etmiyor)
 echo ""
-echo "→ Backend + Dashboard + AppIcon .app içine kopyalanıyor"
+echo "→ Backend + AppIcon .app içine kopyalanıyor"
 APP_RES="${APP}/Contents/Resources"
 mkdir -p "${APP_RES}"
-rm -rf "${APP_RES}/backend" "${APP_RES}/dashboard"
-cp -R "${RES_SRC}/backend"   "${APP_RES}/backend"
-cp -R "${RES_SRC}/dashboard" "${APP_RES}/dashboard"
+rm -rf "${APP_RES}/backend"
+cp -R "${RES_SRC}/backend" "${APP_RES}/backend"
 
-# AppIcon.icns Resources/ köküne (Info.plist CFBundleIconFile bunu arar)
 if [[ -f "${RES_SRC}/AppIcon.icns" ]]; then
   cp "${RES_SRC}/AppIcon.icns" "${APP_RES}/AppIcon.icns"
 fi
