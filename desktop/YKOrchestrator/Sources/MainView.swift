@@ -38,12 +38,15 @@ struct MainView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 320)
-        } detail: {
-            detailView
-                .frame(minWidth: 700, minHeight: 480)
+        VStack(spacing: 0) {
+            GlobalHealthBanner()
+            NavigationSplitView {
+                sidebar
+                    .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 320)
+            } detail: {
+                detailView
+                    .frame(minWidth: 700, minHeight: 480)
+            }
         }
         .navigationTitle("YK Orchestrator")
         .task { await loadProjects() }
@@ -139,6 +142,82 @@ struct MainView: View {
         guard let base = sidecar.apiBaseURL else { return }
         let client = APIClient(baseURL: base)
         try? await client.activateProject(id: id)
+    }
+}
+
+/// Üst global banner — Jira veya Bitbucket offline ise sarı/kırmızı bant gösterir.
+/// VPN unutulduğunda en görünür uyarı.
+struct GlobalHealthBanner: View {
+    @EnvironmentObject private var sidecar: SidecarManager
+    @State private var health: APIClient.Health?
+    @State private var dismissed: Bool = false
+
+    var body: some View {
+        if let h = health, shouldShow(h), !dismissed {
+            HStack(spacing: 10) {
+                Image(systemName: "wifi.exclamationmark")
+                    .foregroundStyle(.white).font(.headline)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title(h)).font(.callout.weight(.semibold)).foregroundStyle(.white)
+                    Text("VPN bağlı mı kontrol et — Yapı Kredi Jira/Bitbucket VPN üzerinden erişilebilir.")
+                        .font(.caption).foregroundStyle(.white.opacity(0.85))
+                }
+                Spacer()
+                Button {
+                    Task { await pollOnce() }
+                } label: {
+                    Image(systemName: "arrow.clockwise").foregroundStyle(.white)
+                }
+                .buttonStyle(.borderless)
+                Button {
+                    withAnimation { dismissed = true }
+                } label: {
+                    Image(systemName: "xmark").foregroundStyle(.white.opacity(0.7))
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(bgColor(h))
+            .task { await pollLoop() }
+        } else {
+            // Görünmüyor — yine de polling devam etsin
+            Color.clear.frame(height: 0).task { await pollLoop() }
+        }
+    }
+
+    private func shouldShow(_ h: APIClient.Health) -> Bool {
+        !h.jira || !h.bitbucket
+    }
+    private func title(_ h: APIClient.Health) -> String {
+        switch (h.jira, h.bitbucket) {
+        case (false, false): return "Jira ve Bitbucket'a erişilemiyor"
+        case (false, _):     return "Jira'ya erişilemiyor"
+        case (_, false):     return "Bitbucket'a erişilemiyor"
+        default:              return ""
+        }
+    }
+    private func bgColor(_ h: APIClient.Health) -> Color {
+        // İkisi de kapalı → kırmızı, biri kapalı → turuncu
+        (!h.jira && !h.bitbucket) ? Color.red : Color.orange
+    }
+
+    private func pollLoop() async {
+        while !Task.isCancelled {
+            await pollOnce()
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+        }
+    }
+    private func pollOnce() async {
+        guard let base = sidecar.apiBaseURL else { return }
+        let client = APIClient(baseURL: base)
+        do {
+            let h = try await client.health()
+            // Yeni eşik aşıldığında dismiss'i sıfırla — yeniden gösterilsin
+            if let prev = health, shouldShow(prev) != shouldShow(h) { dismissed = false }
+            self.health = h
+        } catch {
+            // sessizce geç
+        }
     }
 }
 
