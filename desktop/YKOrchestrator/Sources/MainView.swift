@@ -108,7 +108,7 @@ struct MainView: View {
             case .pullRequests: PRListView(client: client, projectId: activeProjectId)
             case .bitbucket:    BitbucketView(client: client, projectId: activeProjectId)
             case .chat:         ChatView(client: client, projectId: activeProjectId)
-            case .testflight:   TestFlightView(client: client, projectId: activeProjectId)
+            case .testflight:   FlightKitTab()
             case .activity:     ActivityView(client: client, projectId: activeProjectId)
             case .settings:     SettingsView(client: client)
             }

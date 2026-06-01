@@ -7,7 +7,7 @@ name: YKOrchestrator
 options:
   bundleIdPrefix: com.yapikredi
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "14.0"
   createIntermediateGroups: true
   groupSortPosition: top
   generateEmptyDirectories: true
@@ -15,10 +15,10 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "1.2.0"
+    MARKETING_VERSION: "1.3.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
-    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
     ENABLE_HARDENED_RUNTIME: YES
     # Signing identity build-app.sh tarafından override edilir.
     # Lokal Xcode build için "Sign to Run Locally" yeterli.
