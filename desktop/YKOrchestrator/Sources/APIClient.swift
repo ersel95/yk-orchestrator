@@ -537,6 +537,78 @@ extension APIClient {
     }
 }
 
+// MARK: - Bitbucket (v1.2 — branch/commit/tag)
+
+extension APIClient {
+
+    struct BBBranch: Decodable, Identifiable, Hashable {
+        let id: String           // refs/heads/foo
+        let displayId: String    // foo
+        let `default`: Bool?
+        let latestCommit: String?
+        let metadata: BBBranchMetadata?
+
+        struct BBBranchMetadata: Decodable, Hashable {
+            let aheadBehind: AheadBehind?
+            let latestCommit: LatestCommitMeta?
+
+            struct AheadBehind: Decodable, Hashable {
+                let ahead: Int?
+                let behind: Int?
+            }
+            struct LatestCommitMeta: Decodable, Hashable {
+                let displayId: String?
+                let authorTimestamp: Int?
+                let message: String?
+                let author: Author?
+                struct Author: Decodable, Hashable { let name: String?; let displayName: String? }
+            }
+            private enum CodingKeys: String, CodingKey {
+                case aheadBehind = "com.atlassian.bitbucket.server.bitbucket-branch:ahead-behind-metadata-provider"
+                case latestCommit = "com.atlassian.bitbucket.server.bitbucket-branch:latest-commit-metadata"
+            }
+        }
+    }
+
+    struct BBCommit: Decodable, Identifiable, Hashable {
+        let id: String
+        let displayId: String
+        let author: BBAuthor?
+        let authorTimestamp: Int?
+        let message: String?
+        let committer: BBAuthor?
+        let committerTimestamp: Int?
+
+        struct BBAuthor: Decodable, Hashable {
+            let name: String?
+            let displayName: String?
+            let emailAddress: String?
+        }
+    }
+
+    struct BBTag: Decodable, Identifiable, Hashable {
+        let id: String
+        let displayId: String
+        let latestCommit: String?
+    }
+
+    func bbBranches(projectId: Int?, filter: String = "", limit: Int = 200) async throws -> [BBBranch] {
+        try await get("api/bitbucket/branches",
+                      query: ["project_id": projectId.map(String.init),
+                              "filter": filter,
+                              "limit": String(limit)])
+    }
+    func bbCommits(projectId: Int?, branch: String? = nil, path: String? = nil, limit: Int = 200) async throws -> [BBCommit] {
+        try await get("api/bitbucket/commits",
+                      query: ["project_id": projectId.map(String.init),
+                              "branch": branch, "path": path, "limit": String(limit)])
+    }
+    func bbTags(projectId: Int?, limit: Int = 200) async throws -> [BBTag] {
+        try await get("api/bitbucket/tags",
+                      query: ["project_id": projectId.map(String.init), "limit": String(limit)])
+    }
+}
+
 // MARK: - Jira (v1.1)
 
 extension APIClient {

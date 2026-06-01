@@ -12,11 +12,12 @@ struct MainView: View {
     @State private var loadError: String?
 
     enum Tab: String, Hashable, CaseIterable {
-        case jira, pullRequests, chat, testflight, activity, settings
+        case jira, pullRequests, bitbucket, chat, testflight, activity, settings
         var title: String {
             switch self {
             case .jira:         return "Jira"
             case .pullRequests: return "Pull Request'ler"
+            case .bitbucket:    return "Bitbucket"
             case .chat:         return "Chat"
             case .testflight:   return "TestFlight"
             case .activity:     return "Geçmiş"
@@ -27,6 +28,7 @@ struct MainView: View {
             switch self {
             case .jira:         return "list.bullet.clipboard"
             case .pullRequests: return "arrow.triangle.pull"
+            case .bitbucket:    return "shippingbox"
             case .chat:         return "bubble.left.and.bubble.right"
             case .testflight:   return "paperplane"
             case .activity:     return "clock.arrow.circlepath"
@@ -104,6 +106,7 @@ struct MainView: View {
             switch selected ?? .jira {
             case .jira:         JiraView(client: client, projectId: activeProjectId)
             case .pullRequests: PRListView(client: client, projectId: activeProjectId)
+            case .bitbucket:    BitbucketView(client: client, projectId: activeProjectId)
             case .chat:         ChatView(client: client, projectId: activeProjectId)
             case .testflight:   TestFlightView(client: client, projectId: activeProjectId)
             case .activity:     ActivityView(client: client, projectId: activeProjectId)

@@ -8,6 +8,7 @@ from app.core.db import init_db
 from app.core.logging import get_logger, setup_logging
 from app.routers import (
     actions,
+    bitbucket,
     chat,
     health,
     jira,
@@ -58,6 +59,7 @@ app.include_router(llm_router.router)
 app.include_router(projects.router)
 app.include_router(wizard.router)
 app.include_router(actions.router)
+app.include_router(bitbucket.router)
 
 
 def run() -> None:
