@@ -444,6 +444,87 @@ extension APIClient {
     }
 }
 
+// MARK: - Action log (v1.0)
+
+extension APIClient {
+    struct ActionEntry: Decodable, Identifiable, Hashable {
+        let id: Int
+        let project_id: Int?
+        let created_at: String
+        let actor: String
+        let action_type: String
+        let target_kind: String?
+        let target_id: String?
+        let outcome: String
+        let error: String?
+        let duration_ms: Int?
+        let user_note: String?
+        let payload: [String: JSONValue]?
+
+        /// JSON ortamında bilinmeyen tip içerebilir; primitive sarmalayıcı
+        enum JSONValue: Decodable, Hashable {
+            case string(String), int(Int), double(Double), bool(Bool)
+            case array([JSONValue]), object([String: JSONValue]), null
+            init(from decoder: Decoder) throws {
+                let c = try decoder.singleValueContainer()
+                if c.decodeNil() { self = .null; return }
+                if let v = try? c.decode(Bool.self)   { self = .bool(v); return }
+                if let v = try? c.decode(Int.self)    { self = .int(v); return }
+                if let v = try? c.decode(Double.self) { self = .double(v); return }
+                if let v = try? c.decode(String.self) { self = .string(v); return }
+                if let v = try? c.decode([JSONValue].self)        { self = .array(v); return }
+                if let v = try? c.decode([String: JSONValue].self){ self = .object(v); return }
+                self = .null
+            }
+            var stringValue: String? {
+                if case .string(let s) = self { return s }
+                if case .int(let i) = self { return String(i) }
+                if case .bool(let b) = self { return String(b) }
+                return nil
+            }
+        }
+    }
+
+    func listActions(
+        projectId: Int?,
+        actionType: String? = nil,
+        targetKind: String? = nil,
+        targetId: String? = nil,
+        actor: String? = nil,
+        sinceHours: Int? = nil,
+        onlyFailures: Bool = false,
+        limit: Int = 200
+    ) async throws -> [ActionEntry] {
+        var q: [String: String?] = [
+            "project_id": projectId.map(String.init),
+            "limit": String(limit),
+        ]
+        if let a = actionType { q["action_type"] = a }
+        if let k = targetKind { q["target_kind"] = k }
+        if let t = targetId   { q["target_id"]   = t }
+        if let a = actor      { q["actor"] = a }
+        if let h = sinceHours { q["since_hours"] = String(h) }
+        if onlyFailures       { q["only_failures"] = "true" }
+        return try await get("api/actions", query: q)
+    }
+
+    func actionsForTarget(kind: String, id: String) async throws -> [ActionEntry] {
+        try await get("api/actions/by-target", query: ["target_kind": kind, "target_id": id])
+    }
+
+    struct ActionStats: Decodable {
+        let total: Int
+        let failures: Int
+        let by_type: [String: Int]
+        let since_hours: Int
+    }
+    func actionStats(projectId: Int?, sinceHours: Int = 24) async throws -> ActionStats {
+        try await get("api/actions/stats",
+                      query: ["project_id": projectId.map(String.init),
+                              "since_hours": String(sinceHours)])
+    }
+}
+
 // MARK: - Jira (sade)
 
 extension APIClient {

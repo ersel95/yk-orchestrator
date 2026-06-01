@@ -12,12 +12,13 @@ struct MainView: View {
     @State private var loadError: String?
 
     enum Tab: String, Hashable, CaseIterable {
-        case pullRequests, chat, testflight, settings
+        case pullRequests, chat, testflight, activity, settings
         var title: String {
             switch self {
             case .pullRequests: return "Pull Request'ler"
             case .chat:         return "Chat"
             case .testflight:   return "TestFlight"
+            case .activity:     return "Geçmiş"
             case .settings:     return "Ayarlar"
             }
         }
@@ -26,6 +27,7 @@ struct MainView: View {
             case .pullRequests: return "arrow.triangle.pull"
             case .chat:         return "bubble.left.and.bubble.right"
             case .testflight:   return "paperplane"
+            case .activity:     return "clock.arrow.circlepath"
             case .settings:     return "gearshape"
             }
         }
@@ -101,6 +103,7 @@ struct MainView: View {
             case .pullRequests: PRListView(client: client, projectId: activeProjectId)
             case .chat:         ChatView(client: client, projectId: activeProjectId)
             case .testflight:   TestFlightView(client: client, projectId: activeProjectId)
+            case .activity:     ActivityView(client: client, projectId: activeProjectId)
             case .settings:     SettingsView(client: client)
             }
         } else {

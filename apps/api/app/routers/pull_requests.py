@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 from sse_starlette.sse import EventSourceResponse
 
 from app.agents.pr_agent import PRAuthorAgent, PRReviewerAgent
+from app.core.action_log import log_action
 from app.core.active_project import resolve_project_id
 from app.core.db import engine
 from app.models import PullRequestCache
@@ -122,10 +123,25 @@ async def pr_file_diff(
 async def pr_set_status(repo: str, number: int, body: StatusBody) -> dict:
     if body.status not in ("APPROVED", "NEEDS_WORK", "UNAPPROVED"):
         raise HTTPException(status_code=400, detail="geçersiz status")
+    action_map = {
+        "APPROVED": "pr.approve",
+        "NEEDS_WORK": "pr.needs_work",
+        "UNAPPROVED": "pr.unapprove",
+    }
     res = await PRReviewerAgent().set_status(
         pr_id=number, status=body.status, project_id=body.project_id
     )
-    if not res.get("ok"):
+    ok = bool(res.get("ok"))
+    log_action(
+        action_type=action_map[body.status],
+        target_kind="pull_request",
+        target_id=f"{repo}/{number}",
+        payload={"repo": repo, "number": number, "status": body.status},
+        outcome="success" if ok else "failure",
+        error=res.get("error") if not ok else None,
+        project_id=body.project_id,
+    )
+    if not ok:
         # 409 = PR zaten kapanmış/merged → frontend listeyi yenilesin
         code = 409 if res.get("stale") else 503
         raise HTTPException(status_code=code, detail=res.get("error"))
@@ -137,7 +153,21 @@ async def pr_comment(repo: str, number: int, body: CommentBody) -> dict:
     res = await PRReviewerAgent().add_comment(
         pr_id=number, text=body.text, project_id=body.project_id, anchor=body.anchor
     )
-    if not res.get("ok"):
+    ok = bool(res.get("ok"))
+    log_action(
+        action_type="pr.comment.add",
+        target_kind="pull_request",
+        target_id=f"{repo}/{number}",
+        payload={
+            "repo": repo, "number": number,
+            "text_preview": body.text[:120],
+            "has_anchor": bool(body.anchor),
+        },
+        outcome="success" if ok else "failure",
+        error=res.get("error") if not ok else None,
+        project_id=body.project_id,
+    )
+    if not ok:
         raise HTTPException(status_code=503, detail=res.get("error"))
     return res
 
@@ -194,16 +224,34 @@ async def pr_delete_comment(
 
 @router.post("/review/{repo}/{number}/ai-suggestions")
 async def pr_ai_suggestions(repo: str, number: int, project_id: int | None = None) -> dict:
-    return await PRReviewerAgent().suggest_inline_comments(
+    res = await PRReviewerAgent().suggest_inline_comments(
         pr_id=number, project_id=project_id
     )
+    sug_count = len((res or {}).get("suggestions", []))
+    log_action(
+        action_type="pr.ai_suggestion.generate",
+        actor="ai",
+        target_kind="pull_request",
+        target_id=f"{repo}/{number}",
+        payload={"repo": repo, "number": number, "suggestion_count": sug_count},
+        project_id=project_id,
+    )
+    return res
 
 
 @router.post("/review/{repo}/{number}/ai-suggestions/post")
 async def pr_post_suggestions(repo: str, number: int, body: PostSuggestionsBody) -> dict:
-    return await PRReviewerAgent().post_inline_suggestions(
+    res = await PRReviewerAgent().post_inline_suggestions(
         pr_id=number, suggestions=body.suggestions, project_id=body.project_id
     )
+    log_action(
+        action_type="pr.ai_suggestion.post",
+        target_kind="pull_request",
+        target_id=f"{repo}/{number}",
+        payload={"repo": repo, "number": number, "posted_count": len(body.suggestions)},
+        project_id=body.project_id,
+    )
+    return res
 
 
 @router.get("/cache")
