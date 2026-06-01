@@ -193,8 +193,14 @@ struct SetupWizardView: View {
             )
             field("Base URL", placeholder: "https://sdlc.yapikredi.com.tr/jira",
                   text: $draft.jira_base_url)
-            field("E-posta / kullanıcı", placeholder: "ersel@yapikredi.com.tr",
-                  text: $draft.jira_email)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text("E-posta (opsiyonel)").font(.callout).foregroundStyle(.secondary)
+                    Text("— sadece Atlassian Cloud için").font(.footnote).foregroundStyle(.tertiary)
+                }
+                TextField("Yapı Kredi Server/DC ise BOŞ BIRAK", text: $draft.jira_email)
+                    .textFieldStyle(.roundedBorder)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Personal Access Token").font(.callout).foregroundStyle(.secondary)
                 SecureField("PAT (Bearer)", text: $jiraToken)
