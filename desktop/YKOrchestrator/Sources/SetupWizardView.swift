@@ -75,11 +75,20 @@ struct SetupWizardView: View {
 
     // MARK: - Header
 
+    /// Roller adımı sadece >1 provider seçildiyse görünür; tek provider
+    /// durumunda tüm roller otomatik o provider'a atanıp adım atlanır.
+    private var visibleSteps: [Step] {
+        Step.allCases.filter { s in
+            if s == .roles && selectedProviders.count <= 1 { return false }
+            return true
+        }
+    }
+
     private var header: some View {
         HStack(spacing: 12) {
-            ForEach(Step.allCases, id: \.rawValue) { s in
+            ForEach(visibleSteps, id: \.rawValue) { s in
                 stepBadge(s)
-                if s != Step.allCases.last {
+                if s != visibleSteps.last {
                     Rectangle().fill(Color.secondary.opacity(0.2)).frame(height: 1)
                 }
             }
@@ -335,9 +344,7 @@ struct SetupWizardView: View {
     private var footer: some View {
         HStack {
             if step != .welcome {
-                Button("Geri") {
-                    withAnimation { step = Step(rawValue: step.rawValue - 1) ?? .welcome }
-                }
+                Button("Geri") { goBack() }
             }
             Spacer()
             Button(footerActionLabel) { advance() }
@@ -364,12 +371,33 @@ struct SetupWizardView: View {
 
     private func advance() {
         if step == .done { return }
+
+        // Tek provider seçildiyse Roller adımını atla:
+        // tüm rolleri o provider'a auto-assign et, direkt Projeler'e geç.
+        if step == .providers, selectedProviders.count == 1,
+           let only = selectedProviders.first {
+            applyAllRoles(to: only)
+            withAnimation { step = .projects }
+            return
+        }
+
         if let next = Step(rawValue: step.rawValue + 1) {
             if next == .done {
                 commit()
             } else {
                 withAnimation { step = next }
             }
+        }
+    }
+
+    /// Geri butonu — Roller atlandığında Projeler'den Providers'a doğrudan dön.
+    private func goBack() {
+        if step == .projects, selectedProviders.count <= 1 {
+            withAnimation { step = .providers }
+            return
+        }
+        withAnimation {
+            step = Step(rawValue: step.rawValue - 1) ?? .welcome
         }
     }
 
