@@ -537,6 +537,71 @@ extension APIClient {
     }
 }
 
+// MARK: - Claude agent (v1.5)
+
+extension APIClient {
+    struct AgentPlanResult: Decodable {
+        let ok: Bool
+        let plan: String
+        let cost_usd: Double?
+        let duration_ms: Int?
+        let repo: String?
+        let jira_summary: String?
+    }
+    func agentPlan(jiraKey: String, projectId: Int?) async throws -> AgentPlanResult {
+        struct B: Encodable { let jira_key: String; let project_id: Int? }
+        return try await post("api/agent/plan", body: B(jira_key: jiraKey, project_id: projectId))
+    }
+
+    struct AgentPrepareResult: Decodable {
+        let ok: Bool
+        let branch: String?
+        let repo_path: String?
+    }
+    func agentPrepare(jiraKey: String, branchName: String, sourceBranch: String = "develop", projectId: Int?) async throws -> AgentPrepareResult {
+        struct B: Encodable {
+            let jira_key: String
+            let branch_name: String
+            let source_branch: String
+            let project_id: Int?
+        }
+        return try await post("api/agent/prepare",
+                              body: B(jira_key: jiraKey, branch_name: branchName,
+                                      source_branch: sourceBranch, project_id: projectId))
+    }
+
+    struct AgentCodeResult: Decodable {
+        let ok: Bool
+        let report: String
+        let cost_usd: Double?
+    }
+    func agentCode(jiraKey: String, plan: String, projectId: Int?) async throws -> AgentCodeResult {
+        struct B: Encodable { let jira_key: String; let plan: String; let project_id: Int? }
+        return try await post("api/agent/code",
+                              body: B(jira_key: jiraKey, plan: plan, project_id: projectId))
+    }
+
+    struct AgentDiffResult: Decodable {
+        let ok: Bool
+        let status: String
+        let diff: String
+        let diff_truncated: Bool?
+    }
+    func agentDiff(projectId: Int?) async throws -> AgentDiffResult {
+        try await get("api/agent/diff", query: ["project_id": projectId.map(String.init)])
+    }
+
+    struct AgentCommitResult: Decodable {
+        let ok: Bool
+        let pushed: Bool
+    }
+    func agentCommit(message: String, push: Bool = true, projectId: Int?) async throws -> AgentCommitResult {
+        struct B: Encodable { let message: String; let push: Bool; let project_id: Int? }
+        return try await post("api/agent/commit",
+                              body: B(message: message, push: push, project_id: projectId))
+    }
+}
+
 // MARK: - Bitbucket (v1.2 — branch/commit/tag)
 
 extension APIClient {

@@ -29,6 +29,7 @@ struct JiraDetailView: View {
 
     @State private var actionInFlight: Bool = false
     @State private var actionMessage: String?
+    @State private var showAgentSheet: Bool = false
 
     var body: some View {
         ScrollView {
@@ -56,6 +57,15 @@ struct JiraDetailView: View {
         }
         .task(id: task.id) { await load() }
         .navigationTitle("\(task.issue_key) — \(task.summary)")
+        .sheet(isPresented: $showAgentSheet) {
+            AgentSheet(
+                client: client,
+                jiraKey: task.issue_key,
+                jiraSummary: task.summary,
+                projectId: projectId,
+                isPresented: $showAgentSheet
+            )
+        }
     }
 
     // MARK: - Sections
@@ -82,7 +92,14 @@ struct JiraDetailView: View {
                 Button {
                     Task { await createBranch() }
                 } label: { Label("Branch oluştur", systemImage: "arrow.triangle.branch") }
+                    .buttonStyle(.bordered)
+                    .disabled(actionInFlight)
+
+                Button {
+                    showAgentSheet = true
+                } label: { Label("Claude Agent", systemImage: "sparkles") }
                     .buttonStyle(.borderedProminent)
+                    .tint(.purple)
                     .disabled(actionInFlight)
             }
         }
