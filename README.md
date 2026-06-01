@@ -104,18 +104,6 @@ open build/release/export/"YK Orchestrator.app"
 
 Üretim sırası: backend (PyInstaller onedir) → dashboard (next export) → resources kopya → xcodebuild archive → codesign → hdiutil dmg.
 
-### 5. (Opsiyonel) Sabah otomatik tetik (dev modu)
-
-Her sabah 08:30'da otomatik daily üretsin:
-
-```bash
-./scripts/install-launchd.sh
-```
-
-Backend açık kalmalı (run-dev.sh'i background'da bırak veya ayrı bir launchd job yap).
-
-`.app` modunda buna gerek yok — backend açık kaldığı sürece scheduler tetikler.
-
 ---
 
 ## Dağıtım pipeline'ı
@@ -219,7 +207,7 @@ Sparkle public key'i `desktop/project.yml` → `SUPublicEDKey`'e yerleştirilmel
 │   ├── build-app.sh            → release/YKOrchestrator-X.Y.Z.dmg
 │   ├── dist/                   Ara çıktılar (gitignore)
 │   └── release/                .app + .dmg + appcast.xml (gitignore)
-├── scripts/                    Dev mod (setup, run, launchd)
+├── scripts/                    Dev mod + CI (setup, run-dev, release.sh, update_appcast.py)
 ├── launcher/                   Eski dev launcher'ları (.app uygulaması gelince gereksiz)
 └── .github/workflows/
     └── release.yml             Tag push → macos-14 build + sign + notarize + release
@@ -228,26 +216,20 @@ Sparkle public key'i `desktop/project.yml` → `SUPublicEDKey`'e yerleştirilmel
 ## Günlük Akış
 
 ```
-08:30  launchd  →  /api/standup/generate  →  Jira+Git+BB veri çekilir, daily üretilir
-09:00  Sen      →  Dashboard'da "Bugün" sayfasını açarsın, metni gözden geçirip
-                   düzenlersin, "Kaydet"e basarsın.
-09:30  Daily    →  (toplantı bittikten sonra) transkripti "Transkriptler" sayfasına
-                   yapıştırırsın, sistem konuşmacı/aksiyon ayrımı yapar.
-Gün içi          →  PR aç (draft → AI açıklama → manuel onay → Bitbucket'a push)
-                   PR review et (AI özet ile diff'i hızlı kavra)
-                   Chat'te geçmişe sor: "geçen Salı IOS-1234 için ne demiştik?"
-18:00  Sen      →  TestFlight sayfasına gel, "Anladım, devam et" → "TestFlight'a Yükle"
-                   Fastlane çıktısı canlı stream olur.
+Gün içi  →  PR aç (draft → AI açıklama → manuel onay → Bitbucket'a push)
+            PR review et (AI özet ile diff'i hızlı kavra)
+            Chat'te geçmişe sor: "geçen Salı IOS-1234 için ne demiştik?"
+18:00    →  TestFlight sayfasına gel, "Anladım, devam et" → "TestFlight'a Yükle"
+            Fastlane çıktısı canlı stream olur.
 ```
 
 ## Mimari Notlar
 
-- **Lokal LLM**: LM Studio'nun OpenAI-uyumlu HTTP API'sini kullanır → istersen Ollama'ya geçmek için sadece `LLM_BASE_URL`'i değiştir.
-- **Model yönlendirme**: 3 rol tanımlı (`general`, `code`, `embed`). Backend her agent'ı doğru modele yönlendirir.
-- **RAG**: ChromaDB lokal olarak `data/chroma/` altında persist olur. 4 koleksiyon: daily, transcript, pull_request, jira.
-- **Veri akışı**: SQLite (kalıcı kayıt) + Chroma (vektör arama) çift katmanlı. Agent'lar her iki yere de yazar.
+- **Multi-LLM router** (v0.3+): rol bazlı (provider, model) atama. Provider'lar: LM Studio, Anthropic API, Claude Code (subscription via CLI), OpenAI.
+- **RAG**: ChromaDB lokal olarak persist olur, chat sorgulamada kullanılır.
+- **Veri akışı**: SQLite (kalıcı kayıt) + Chroma (vektör arama) çift katmanlı.
 - **Streaming**: Chat ve TestFlight çıktısı SSE ile gerçek zamanlı dashboard'a düşer.
-- **Human-in-the-loop**: Daily metni, PR açıklaması, TestFlight upload — hepsi onay ister.
+- **Human-in-the-loop**: PR açıklaması, TestFlight upload — hepsi onay ister.
 
 ## Sorun Giderme
 

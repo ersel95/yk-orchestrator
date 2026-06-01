@@ -14,10 +14,8 @@ from app.routers import (
     projects,
     pull_requests,
     settings as settings_router,
-    standup,
     stream,
     testflight,
-    transcript,
     wizard,
 )
 
@@ -51,8 +49,6 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(jira.router)
 app.include_router(pull_requests.router)
-app.include_router(standup.router)
-app.include_router(transcript.router)
 app.include_router(chat.router)
 app.include_router(testflight.router)
 app.include_router(settings_router.router)

@@ -45,10 +45,7 @@ export function useActivateProject() {
     onSuccess: () => {
       // Active project değişti — tüm proje-bağımlı veriyi yenile
       qc.invalidateQueries({ queryKey: ["projects"] });
-      qc.invalidateQueries({ queryKey: ["standup"] });
-      qc.invalidateQueries({ queryKey: ["standups"] });
       qc.invalidateQueries({ queryKey: ["prs"] });
-      qc.invalidateQueries({ queryKey: ["transcripts"] });
       qc.invalidateQueries({ queryKey: ["jira"] });
       qc.invalidateQueries({ queryKey: ["testflight-status"] });
     },

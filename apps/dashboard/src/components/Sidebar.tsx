@@ -3,11 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Calendar,
   GitPullRequest,
-  History,
   MessageSquare,
-  Mic,
   Settings,
   Smartphone,
   Sparkles,
@@ -16,10 +13,7 @@ import { cn } from "@/lib/utils";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 
 const items = [
-  { href: "/", label: "Bugün", icon: Calendar },
   { href: "/pull-requests", label: "Pull Request'ler", icon: GitPullRequest },
-  { href: "/standups", label: "Daily Geçmişi", icon: History },
-  { href: "/transcripts", label: "Transkriptler", icon: Mic },
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/testflight", label: "TestFlight", icon: Smartphone },
   { href: "/settings", label: "Ayarlar", icon: Settings },

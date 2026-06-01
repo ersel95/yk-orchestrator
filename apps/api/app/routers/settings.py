@@ -40,8 +40,4 @@ async def get_app_settings() -> dict:
             "lane": s.fastlane_lane,
             "project_dir": s.fastlane_project_dir,
         },
-        "scheduler": {
-            "daily_fetch_hour": s.daily_fetch_hour,
-            "daily_fetch_minute": s.daily_fetch_minute,
-        },
     }

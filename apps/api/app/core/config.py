@@ -133,9 +133,6 @@ class Settings(BaseSettings):
     fastlane_project_dir: str = ""
     testflight_auto_submit: bool = False
 
-    daily_fetch_hour: int = 8
-    daily_fetch_minute: int = 30
-
     dashboard_allow_origin: str = "http://localhost:3000"
 
     def model_post_init(self, __context: Any) -> None:
