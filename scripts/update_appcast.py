@@ -44,7 +44,10 @@ def build_item(args) -> ET.Element:
     item = ET.Element("item")
     ET.SubElement(item, "title").text = f"YK Orchestrator {args.version}"
     ET.SubElement(item, "pubDate").text = format_datetime(datetime.now(timezone.utc))
-    ET.SubElement(item, sk("version")).text = args.version
+    # sparkle:version → CFBundleVersion (build number, monotonik artan integer).
+    # Sparkle'ın sürüm karşılaştırması bu alandadır.
+    # sparkle:shortVersionString → kullanıcıya gösterilen marketing version.
+    ET.SubElement(item, sk("version")).text = str(args.build)
     ET.SubElement(item, sk("shortVersionString")).text = args.version
     ET.SubElement(item, sk("minimumSystemVersion")).text = args.min_system
     if args.notes_url:
@@ -59,7 +62,9 @@ def build_item(args) -> ET.Element:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--version", required=True)
+    p.add_argument("--version", required=True, help="Marketing version (örn 0.4.1)")
+    p.add_argument("--build", required=True, type=int,
+                   help="CFBundleVersion (monotonik artan integer — Sparkle bunu karşılaştırır)")
     p.add_argument("--url", required=True)
     p.add_argument("--length", required=True, type=int)
     p.add_argument("--signature", required=True)
@@ -71,8 +76,9 @@ def main():
     tree, root = load_or_create(args.appcast)
     channel = root.find("channel")
 
+    # Aynı marketing version için var olan item'ı düş (idempotent re-run)
     for it in channel.findall("item"):
-        if it.findtext(sk("version")) == args.version:
+        if it.findtext(sk("shortVersionString")) == args.version:
             channel.remove(it)
 
     item = build_item(args)

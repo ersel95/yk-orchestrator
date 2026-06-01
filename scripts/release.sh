@@ -22,6 +22,12 @@ VERSION="${1:?usage: release.sh <version>}"
 : "${ASC_ISSUER_ID:?set ASC_ISSUER_ID}"
 : "${SU_PUBLIC_ED_KEY:?set SU_PUBLIC_ED_KEY}"
 
+# CFBundleVersion için monotonik artan integer — Sparkle bunu karşılaştırır.
+# Tag/commit sayısından bağımsız: total commit sayısı (git rev-list --count HEAD)
+# her yeni commit ile +1 artar → her release'de garantili büyür.
+BUILD="${BUILD:-$(git rev-list --count HEAD)}"
+echo "==> BUILD=${BUILD} (CFBundleVersion → Sparkle comparison anchor)"
+
 APP_NAME="YK Orchestrator"
 APP_BASENAME="YKOrchestrator"
 DIST="$(pwd)/dist"
@@ -88,6 +94,8 @@ xcodebuild \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="${SIGNING_IDENTITY}" \
   DEVELOPMENT_TEAM=XZAJKFLEF8 \
+  MARKETING_VERSION="${VERSION}" \
+  CURRENT_PROJECT_VERSION="${BUILD}" \
   archive | tail -10
 
 # 6) Export — Developer ID method (notarize için zorunlu)

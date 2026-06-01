@@ -19,7 +19,14 @@ jobs:
 
       - name: Resolve version
         id: ver
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          # Tüm git history lazım (rev-list --count için)
+          git fetch --unshallow 2>/dev/null || true
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUILD="$(git rev-list --count HEAD)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${VERSION} BUILD=${BUILD}"
 
       - name: Setup Python 3.12 (PyInstaller için)
         uses: actions/setup-python@v5
@@ -64,6 +71,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           SU_PUBLIC_ED_KEY: ${{ secrets.SU_PUBLIC_ED_KEY }}
+          BUILD: ${{ steps.ver.outputs.build }}
         run: scripts/release.sh "${{ steps.ver.outputs.version }}"
 
       - name: Compute checksum
@@ -105,8 +113,10 @@ jobs:
           # olabilir — force checkout ile temizleyip main'e geç.
           git fetch origin main
           git checkout -f main
+          BUILD="${{ steps.ver.outputs.build }}"
           python3 scripts/update_appcast.py \
-            --version "$VERSION" --url "$DMG_URL" --length "$LEN" --signature "$SIG" \
+            --version "$VERSION" --build "$BUILD" \
+            --url "$DMG_URL" --length "$LEN" --signature "$SIG" \
             --notes-url "https://github.com/${{ github.repository }}/releases/tag/v$VERSION"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
