@@ -33,13 +33,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Setup Node 20 (Next.js için)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: apps/dashboard/package-lock.json
-
       - name: xcodegen yükle
         run: brew install xcodegen
 
