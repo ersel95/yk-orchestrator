@@ -24,6 +24,25 @@ struct SetupWizardView: View {
     @State private var jiraValidation: ValidationState = .idle
     @State private var bitbucketValidation: ValidationState = .idle
 
+    // ProjectsStep — backend'den auto-fetch edilen listeler
+    @State private var availableJiraProjects: [JiraProjectItem] = []
+    @State private var availableBitbucketRepos: [BitbucketRepoItem] = []
+    @State private var projectsFetchError: String?
+    @State private var projectsLoading: Bool = false
+    @State private var projectsFetched: Bool = false   // sadece bir kez fetch et
+
+    struct JiraProjectItem: Codable, Hashable, Identifiable {
+        let key: String
+        let name: String?
+        var id: String { key }
+    }
+    struct BitbucketRepoItem: Codable, Hashable, Identifiable {
+        let slug: String
+        let name: String?
+        let default_branch: String?
+        var id: String { slug }
+    }
+
     enum ValidationState: Equatable {
         case idle
         case validating
@@ -362,23 +381,153 @@ struct SetupWizardView: View {
         }
     }
 
-    // ─── Projeler (mevcut) ────────────────────────────────────────
+    // ─── Projeler (auto-discovery + dosya seçici) ─────────────────
     private var projectsStep: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Projeler")
-            Text("Birden fazla iOS projen varsa her biri için ayrı Jira anahtarı / repo / lokal yol tanımlayabilirsin.")
+            Text("Bitbucket'taki Project Key'in altında erişebildiğin repo'lar listeleniyor. Çalışacağın repo'ları seç, her birine eşleşen Jira projesini ve yerel klasörü ata.")
                 .foregroundStyle(.secondary)
-            ForEach($draft.projects) { $p in
-                ProjectCard(project: $p, onDelete: {
-                    draft.projects.removeAll { $0.id == p.id }
-                })
+                .font(.callout)
+
+            if projectsLoading {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Jira projeleri ve Bitbucket repo'ları çekiliyor...")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.08))
+                .cornerRadius(8)
+            } else if let err = projectsFetchError {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(err).font(.callout)
+                    Spacer()
+                    Button("Tekrar dene") { Task { await fetchProjectLists() } }
+                        .buttonStyle(.bordered)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.10))
+                .cornerRadius(8)
+            } else {
+                // Repo seçim listesi (Bitbucket workspace altındaki tüm repo'lar)
+                if availableBitbucketRepos.isEmpty {
+                    Text("'\(draft.bitbucket_workspace)' projesi altında repo bulunamadı.")
+                        .foregroundStyle(.secondary).font(.callout)
+                } else {
+                    Text("Bitbucket repo'ları (\(draft.bitbucket_workspace))")
+                        .font(.callout.weight(.medium))
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(availableBitbucketRepos) { repo in
+                            BitbucketRepoToggle(
+                                repo: repo,
+                                isSelected: isProjectSelected(repoSlug: repo.slug),
+                                onToggle: { toggleRepoSelection(repo) }
+                            )
+                        }
+                    }
+                }
             }
-            Button {
-                draft.projects.append(ProjectConfig(name: "Yeni Proje",
-                                                   slug: "proje-\(draft.projects.count + 1)"))
-            } label: {
-                Label("Proje ekle", systemImage: "plus")
+
+            // Seçilen projeler için detay kartları (Jira eşleştirme + local path)
+            if !draft.projects.isEmpty {
+                Divider().padding(.vertical, 8)
+                Text("Seçilen projelerin ayarları").font(.callout.weight(.medium))
+                ForEach($draft.projects) { $p in
+                    ProjectDetailCard(
+                        project: $p,
+                        availableJiraProjects: availableJiraProjects,
+                        onDelete: { draft.projects.removeAll { $0.id == p.id } }
+                    )
+                }
             }
+        }
+        .task {
+            if !projectsFetched && step == .projects {
+                projectsFetched = true
+                await fetchProjectLists()
+            }
+        }
+    }
+
+    private func isProjectSelected(repoSlug: String) -> Bool {
+        draft.projects.contains { $0.bitbucket_repo == repoSlug }
+    }
+
+    private func toggleRepoSelection(_ repo: BitbucketRepoItem) {
+        if let idx = draft.projects.firstIndex(where: { $0.bitbucket_repo == repo.slug }) {
+            draft.projects.remove(at: idx)
+        } else {
+            // Repo'dan otomatik doldur
+            let p = ProjectConfig(
+                name: repo.name ?? repo.slug,
+                slug: repo.slug,
+                jira_project_keys: "",  // kullanıcı seçecek
+                bitbucket_workspace: draft.bitbucket_workspace,
+                bitbucket_repo: repo.slug,
+                local_repo_path: "",   // kullanıcı klasör seçecek
+                git_default_branch: repo.default_branch?.isEmpty == false ? repo.default_branch! : "dev"
+            )
+            draft.projects.append(p)
+        }
+    }
+
+    private func fetchProjectLists() async {
+        guard let base = sidecar.apiBaseURL else {
+            projectsFetchError = "Backend hazır değil"
+            return
+        }
+        projectsLoading = true
+        projectsFetchError = nil
+        defer { projectsLoading = false }
+
+        // Paralel iki istek
+        async let jira = postJSON(
+            base.appendingPathComponent("api/wizard/list-jira-projects"),
+            body: [
+                "base_url": draft.jira_base_url,
+                "email": draft.jira_email,
+                "token": jiraToken,
+            ]
+        )
+        async let bitbucket = postJSON(
+            base.appendingPathComponent("api/wizard/list-bitbucket-repos"),
+            body: [
+                "base_url": draft.bitbucket_base_url,
+                "username": draft.bitbucket_username,
+                "token": bitbucketToken,
+                "workspace": draft.bitbucket_workspace,
+            ]
+        )
+        let (jiraData, bbData) = await (jira, bitbucket)
+
+        var errs: [String] = []
+        if jiraData.ok {
+            availableJiraProjects = (jiraData.payload?["projects"] as? [[String: Any]])?
+                .compactMap { dict in
+                    guard let k = dict["key"] as? String else { return nil }
+                    return JiraProjectItem(key: k, name: dict["name"] as? String)
+                } ?? []
+        } else {
+            errs.append("Jira: \(jiraData.message)")
+        }
+        if bbData.ok {
+            availableBitbucketRepos = (bbData.payload?["repos"] as? [[String: Any]])?
+                .compactMap { dict in
+                    guard let s = dict["slug"] as? String else { return nil }
+                    return BitbucketRepoItem(
+                        slug: s,
+                        name: dict["name"] as? String,
+                        default_branch: dict["default_branch"] as? String
+                    )
+                } ?? []
+        } else {
+            errs.append("Bitbucket: \(bbData.message)")
+        }
+        if !errs.isEmpty {
+            projectsFetchError = errs.joined(separator: "  ·  ")
         }
     }
 
@@ -476,19 +625,19 @@ struct SetupWizardView: View {
             return
         }
         jiraValidation = .validating
-        let payload: [String: Any] = [
-            "base_url": draft.jira_base_url,
-            "email": draft.jira_email,
-            "token": jiraToken,
-            "project_keys": draft.jira_project_keys,
-        ]
-        let result = await postJSON(base.appendingPathComponent("api/wizard/test-jira"), body: payload)
+        let r = await postJSON(
+            base.appendingPathComponent("api/wizard/test-jira"),
+            body: [
+                "base_url": draft.jira_base_url,
+                "email": draft.jira_email,
+                "token": jiraToken,
+                "project_keys": draft.jira_project_keys,
+            ]
+        )
+        let state: ValidationState = r.ok ? .ok(r.message) : .error(r.message)
         await MainActor.run {
-            self.jiraValidation = result
-            // Otomatik ilerleme — başarılıysa kullanıcı tekrar İleri tıklamasın
-            if case .ok = result {
-                withAnimation { self.step = .bitbucket }
-            }
+            self.jiraValidation = state
+            if r.ok { withAnimation { self.step = .bitbucket } }
         }
     }
 
@@ -498,44 +647,55 @@ struct SetupWizardView: View {
             return
         }
         bitbucketValidation = .validating
-        let payload: [String: Any] = [
-            "base_url": draft.bitbucket_base_url,
-            "username": draft.bitbucket_username,
-            "token": bitbucketToken,
-            "workspace": draft.bitbucket_workspace,
-            "repo": draft.bitbucket_default_repo,
-        ]
-        let result = await postJSON(base.appendingPathComponent("api/wizard/test-bitbucket"), body: payload)
+        let r = await postJSON(
+            base.appendingPathComponent("api/wizard/test-bitbucket"),
+            body: [
+                "base_url": draft.bitbucket_base_url,
+                "username": draft.bitbucket_username,
+                "token": bitbucketToken,
+                "workspace": draft.bitbucket_workspace,
+                "repo": draft.bitbucket_default_repo,
+            ]
+        )
+        let state: ValidationState = r.ok ? .ok(r.message) : .error(r.message)
         await MainActor.run {
-            self.bitbucketValidation = result
-            if case .ok = result {
-                withAnimation { self.step = .providers }
-            }
+            self.bitbucketValidation = state
+            if r.ok { withAnimation { self.step = .providers } }
         }
     }
 
-    private func postJSON(_ url: URL, body: [String: Any]) async -> ValidationState {
+    struct JSONResult {
+        let ok: Bool
+        let message: String
+        let payload: [String: Any]?
+    }
+
+    private func postJSON(_ url: URL, body: [String: Any]) async -> JSONResult {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 12
+        req.timeoutInterval = 15
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             guard let http = resp as? HTTPURLResponse else {
-                return .error("Geçersiz yanıt")
+                return JSONResult(ok: false, message: "Geçersiz yanıt", payload: nil)
             }
             if http.statusCode >= 500 {
-                return .error("Backend hatası HTTP \(http.statusCode)")
+                return JSONResult(ok: false,
+                                  message: "Backend hatası HTTP \(http.statusCode)",
+                                  payload: nil)
             }
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let okBool = (json["ok"] as? Bool) ?? false
+                let ok = (json["ok"] as? Bool) ?? false
                 let message = (json["message"] as? String) ?? "?"
-                return okBool ? .ok(message) : .error(message)
+                return JSONResult(ok: ok, message: message, payload: json)
             }
-            return .error("Yanıt parse edilemedi")
+            return JSONResult(ok: false, message: "Yanıt parse edilemedi", payload: nil)
         } catch {
-            return .error("İstek başarısız: \(error.localizedDescription)")
+            return JSONResult(ok: false,
+                              message: "İstek başarısız: \(error.localizedDescription)",
+                              payload: nil)
         }
     }
 
@@ -807,35 +967,175 @@ private struct RoleAssignmentCard: View {
     }
 }
 
-/// Proje kartı (mevcut yapı — değişmedi)
-private struct ProjectCard: View {
+/// Bitbucket repo seçim satırı — toggle ile draft.projects'e ekle/çıkar
+private struct BitbucketRepoToggle: View {
+    let repo: SetupWizardView.BitbucketRepoItem
+    let isSelected: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    .font(.body)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(repo.slug).font(.body.weight(.medium))
+                    if let n = repo.name, n != repo.slug {
+                        Text(n).font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if let b = repo.default_branch, !b.isEmpty {
+                    Text(b).font(.caption.monospaced()).foregroundStyle(.secondary)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.12)).cornerRadius(4)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
+            .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Seçilen projenin ayrıntıları — Jira projesi multi-select + lokal klasör seçici.
+private struct ProjectDetailCard: View {
     @Binding var project: ProjectConfig
+    let availableJiraProjects: [SetupWizardView.JiraProjectItem]
     let onDelete: () -> Void
+
+    /// jira_project_keys virgüllü string ↔ Set<String>
+    private var selectedJiraKeys: Set<String> {
+        Set(project.jira_project_keys
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty })
+    }
+
+    private func toggleJiraKey(_ key: String) {
+        var keys = selectedJiraKeys
+        if keys.contains(key) { keys.remove(key) } else { keys.insert(key) }
+        project.jira_project_keys = keys.sorted().joined(separator: ",")
+    }
+
+    private func pickLocalPath() {
+        let panel = NSOpenPanel()
+        panel.title = "Lokal repo klasörünü seç"
+        panel.message = "\(project.slug) için klonladığın git klasörünü seç"
+        panel.prompt = "Seç"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        if panel.runModal() == .OK, let url = panel.url {
+            project.local_repo_path = url.path
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                TextField("İsim", text: $project.name)
-                    .textFieldStyle(.roundedBorder)
+                Image(systemName: "folder.fill").foregroundStyle(.tint)
+                Text(project.bitbucket_repo).font(.body.weight(.semibold))
+                Spacer()
                 Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
+                    Image(systemName: "minus.circle")
+                }.buttonStyle(.borderless)
+            }
+
+            // Görüntü ismi
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Görünen isim").font(.caption).foregroundStyle(.secondary)
+                TextField("örn Azerbaycan", text: $project.name)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            // Jira projeleri (multi-select chip'ler)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Bu repo'ya bağlı Jira projeleri").font(.caption).foregroundStyle(.secondary)
+                if availableJiraProjects.isEmpty {
+                    Text("Jira'dan proje listesi alınamadı — bu alanı virgüllü olarak elle gir:")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    TextField("CAPYBARZ,MOLENARS", text: $project.jira_project_keys)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    let columns = [GridItem(.adaptive(minimum: 110), spacing: 6)]
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+                        ForEach(availableJiraProjects) { jp in
+                            JiraKeyChip(
+                                key: jp.key,
+                                name: jp.name,
+                                isSelected: selectedJiraKeys.contains(jp.key),
+                                onToggle: { toggleJiraKey(jp.key) }
+                            )
+                        }
+                    }
                 }
             }
-            TextField("slug (az, nl, ...)", text: $project.slug).textFieldStyle(.roundedBorder)
-            TextField("Jira anahtarları (CAPYBARZ)", text: $project.jira_project_keys)
-                .textFieldStyle(.roundedBorder)
-            TextField("Bitbucket workspace (COSADC)", text: $project.bitbucket_workspace)
-                .textFieldStyle(.roundedBorder)
-            TextField("Bitbucket repo (az-adc-ios)", text: $project.bitbucket_repo)
-                .textFieldStyle(.roundedBorder)
-            TextField("Lokal repo yolu (/Users/.../Yk/Az)", text: $project.local_repo_path)
-                .textFieldStyle(.roundedBorder)
-            TextField("Varsayılan branch", text: $project.git_default_branch)
-                .textFieldStyle(.roundedBorder)
+
+            // Lokal repo yolu — sadece file picker, yazı kabul yok
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Lokal repo klasörü").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Image(systemName: project.local_repo_path.isEmpty
+                          ? "questionmark.folder" : "folder.fill.badge.gearshape")
+                        .foregroundStyle(project.local_repo_path.isEmpty ? .orange : .green)
+                    Text(project.local_repo_path.isEmpty
+                         ? "Henüz seçilmedi"
+                         : project.local_repo_path)
+                        .font(.callout.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Klasör Seç...", action: pickLocalPath)
+                        .buttonStyle(.bordered)
+                }
+                .padding(8)
+                .background(Color.secondary.opacity(0.08))
+                .cornerRadius(6)
+            }
+
+            // Branch
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Varsayılan branch").font(.caption).foregroundStyle(.secondary)
+                TextField("dev", text: $project.git_default_branch)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 200)
+            }
         }
-        .padding(12)
+        .padding(14)
         .background(Color.secondary.opacity(0.06))
-        .cornerRadius(8)
+        .cornerRadius(10)
+    }
+}
+
+private struct JiraKeyChip: View {
+    let key: String
+    let name: String?
+    let isSelected: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 4) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.footnote)
+                Text(key).font(.callout.monospaced())
+                if let n = name, !n.isEmpty {
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(n).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(isSelected ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08))
+            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+            .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
     }
 }
 

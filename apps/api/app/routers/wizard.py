@@ -119,6 +119,114 @@ def _jira_network_error(e: Exception) -> TestResult:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Auto-discovery — Jira projects + Bitbucket repos
+# ─────────────────────────────────────────────────────────────────────────
+
+class ListJiraProjectsResponse(BaseModel):
+    ok: bool
+    message: str = ""
+    projects: list[dict] = []   # [{key, name}]
+
+
+@router.post("/list-jira-projects", response_model=ListJiraProjectsResponse)
+async def list_jira_projects(body: TestJiraRequest) -> ListJiraProjectsResponse:
+    """Kullanıcının Jira'da erişebildiği tüm projeleri (key + name) döner.
+
+    Wizard ProjectsStep'te kullanıcıya dropdown olarak sunulur. Bearer-first +
+    Basic fallback aynı test-jira mantığıyla çalışır.
+    """
+    base = body.base_url.rstrip("/")
+    url = f"{base}/rest/api/2/project"
+
+    async def attempt(bearer: str | None, basic: tuple[str, str] | None) -> tuple[int, list]:
+        headers = {"Accept": "application/json"}
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, follow_redirects=True) as c:
+            r = await c.get(url, headers=headers, auth=basic)
+        if r.status_code == 200:
+            data = r.json()
+            return 200, data if isinstance(data, list) else []
+        return r.status_code, []
+
+    try:
+        status, projects = await attempt(bearer=body.token, basic=None)
+        if status != 200 and body.email:
+            status, projects = await attempt(bearer=None, basic=(body.email, body.token))
+        if status != 200:
+            return ListJiraProjectsResponse(ok=False, message=f"Auth/erişim hatası (HTTP {status})")
+
+        items = [{"key": p.get("key"), "name": p.get("name")} for p in projects if p.get("key")]
+        items.sort(key=lambda x: x["key"])
+        return ListJiraProjectsResponse(ok=True, projects=items, message=f"{len(items)} proje")
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        net = _jira_network_error(e)
+        return ListJiraProjectsResponse(ok=False, message=net.message)
+    except Exception as e:
+        log.warning(f"list-jira-projects: {e}")
+        return ListJiraProjectsResponse(ok=False, message=f"Beklenmedik hata: {e}")
+
+
+class ListBitbucketReposRequest(BaseModel):
+    base_url: str
+    username: str
+    token: str
+    workspace: str   # project key (örn COSADC)
+
+
+class ListBitbucketReposResponse(BaseModel):
+    ok: bool
+    message: str = ""
+    repos: list[dict] = []   # [{slug, name, default_branch}]
+
+
+@router.post("/list-bitbucket-repos", response_model=ListBitbucketReposResponse)
+async def list_bitbucket_repos(body: ListBitbucketReposRequest) -> ListBitbucketReposResponse:
+    """Bitbucket Server'da verilen project key altındaki tüm repo'ları listeler.
+
+    Wizard ProjectsStep'te kullanıcı tek tıkla repo seçebilsin diye.
+    """
+    base = body.base_url.rstrip("/")
+    if not body.workspace:
+        return ListBitbucketReposResponse(ok=False, message="Project Key boş — önceki adımda doldur")
+
+    url = f"{base}/rest/api/1.0/projects/{body.workspace}/repos?limit=1000"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {body.token}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, follow_redirects=True) as c:
+            r = await c.get(url, headers=headers)
+        if r.status_code != 200:
+            return ListBitbucketReposResponse(
+                ok=False,
+                message=f"Erişim hatası (HTTP {r.status_code}) — Project Key ve token izinleri doğru mu?"
+            )
+        data = r.json()
+        values = data.get("values", [])
+        repos = []
+        for v in values:
+            repos.append({
+                "slug": v.get("slug"),
+                "name": v.get("name") or v.get("slug"),
+                "default_branch": (v.get("defaultBranch") or {}).get("displayId", ""),
+            })
+        repos.sort(key=lambda x: x["slug"])
+        return ListBitbucketReposResponse(
+            ok=True, repos=repos, message=f"{len(repos)} repo"
+        )
+    except httpx.ConnectError as e:
+        return ListBitbucketReposResponse(ok=False, message=f"Bağlanılamadı: {e}")
+    except httpx.TimeoutException:
+        return ListBitbucketReposResponse(ok=False, message="İstek zaman aşımına uğradı (8 sn).")
+    except Exception as e:
+        log.warning(f"list-bitbucket-repos: {e}")
+        return ListBitbucketReposResponse(ok=False, message=f"Beklenmedik hata: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Bitbucket Server
 # ─────────────────────────────────────────────────────────────────────────
 
