@@ -11,6 +11,10 @@ struct SettingsView: View {
     @State private var savedMessage: String?
     @State private var draft: AppConfig = ConfigStore.shared.config
 
+    // Projeler artık DB'den (tek kaynak); config.json'dan değil.
+    @State private var dbProjects: [APIClient.ProjectInfo] = []
+    @State private var editingProject: APIClient.ProjectInfo?
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -40,6 +44,17 @@ struct SettingsView: View {
             .padding(20)
         }
         .onAppear { draft = config.config }
+        .task { await loadProjects() }
+        .sheet(item: $editingProject) { proj in
+            ProjectSettingsEditor(client: client, project: proj) {
+                Task { await loadProjects() }
+            }
+        }
+    }
+
+    private func loadProjects() async {
+        do { dbProjects = try await client.listProjects().projects }
+        catch { if !error.isCancellation { saveError = "Projeler yüklenemedi: \(error.localizedDescription)" } }
     }
 
     private var jiraSection: some View {
@@ -120,20 +135,29 @@ struct SettingsView: View {
 
     private var projectsSection: some View {
         section("Projeler") {
-            if draft.projects.isEmpty {
+            if dbProjects.isEmpty {
                 Text("Proje yok").foregroundStyle(.secondary).font(.caption)
             } else {
-                ForEach(draft.projects) { p in
-                    HStack {
+                ForEach(dbProjects) { p in
+                    HStack(spacing: 10) {
                         Image(systemName: "folder.fill").foregroundStyle(.tint)
-                        VStack(alignment: .leading) {
-                            Text(p.name).font(.callout.weight(.medium))
-                            Text(p.bitbucket_repo).font(.caption.monospaced()).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(p.name).font(.callout.weight(.medium))
+                                if testflightReady(p) {
+                                    Label("TestFlight hazır", systemImage: "paperplane.fill")
+                                        .font(.caption2).foregroundStyle(.green)
+                                } else {
+                                    Label("TestFlight yapılandırılmadı", systemImage: "paperplane")
+                                        .font(.caption2).foregroundStyle(.orange)
+                                }
+                            }
+                            Text(p.local_repo_path.isEmpty ? "yol yok" : p.local_repo_path)
+                                .font(.caption.monospaced()).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
                         }
                         Spacer()
-                        Text(p.local_repo_path.isEmpty ? "yol yok" : p.local_repo_path)
-                            .font(.caption.monospaced()).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle)
+                        Button("Düzenle") { editingProject = p }
                     }
                     .padding(8)
                     .background(Color.secondary.opacity(0.06))
@@ -141,6 +165,12 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private func testflightReady(_ p: APIClient.ProjectInfo) -> Bool {
+        !(p.xcode_scheme ?? "").isEmpty
+            && !(p.xcode_environments ?? "").isEmpty
+            && (!(p.xcode_container_path ?? "").isEmpty || !p.local_repo_path.isEmpty)
     }
 
     // MARK: - helpers

@@ -8,37 +8,35 @@
 import Foundation
 import Observation
 
-/// The user's catalog of apps to publish, persisted as JSON under
-/// `~/Library/Application Support/FlightKit/projects.json`. Nothing is bundled —
-/// every project is added by the user, so FlightKit ships with no app-specific data.
+/// TestFlight app kataloğu — artık genel proje DB'sinden (`/api/projects`) türetilir.
+/// FlightKit kendi JSON kataloğunu tutmaz; app'ler Genel Ayarlar'dan yönetilir.
+/// `ProjectBridge` her DB projesini bir `AppProject`'e çevirir.
 @MainActor
 @Observable
 final class FKProjectStore {
     private(set) var projects: [AppProject] = []
+    private(set) var loadError: String?
     /// Bumped whenever a project's API key is saved/deleted. Views that show a
     /// credential indicator (the sidebar) read this so they re-check the Keychain.
     private(set) var credentialsRevision = 0
 
-    private let fileURL: URL
+    private var client: APIClient?
 
-    init() {
-        // YK Orchestrator alt-klasörü altında — FlightKit standalone'dan ayrı tutulur
-        let support = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appending(path: "YK Orchestrator", directoryHint: .isDirectory)
-            .appending(path: "flightkit", directoryHint: .isDirectory)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        self.fileURL = support.appending(path: "projects.json")
-        load()
-    }
+    init() {}
 
-    func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode([AppProject].self, from: data) else {
-            projects = []
-            return
+    /// Genel projeleri DB'den çekip `AppProject` listesine türetir.
+    func refresh(client: APIClient) async {
+        self.client = client
+        do {
+            let resp = try await client.listProjects()
+            projects = resp.projects
+                .filter { !$0.is_archived }
+                .map(ProjectBridge.appProject(from:))
+            loadError = nil
+        } catch {
+            if error.isCancellation { return }
+            loadError = error.localizedDescription
         }
-        projects = decoded
     }
 
     /// Call after saving/deleting an API key so credential indicators refresh.
@@ -46,28 +44,9 @@ final class FKProjectStore {
         credentialsRevision += 1
     }
 
-    func add(_ project: AppProject) {
-        projects.append(project)
-        persist()
-    }
-
-    func update(_ project: AppProject) {
-        guard let index = projects.firstIndex(where: { $0.id == project.id }) else { return }
-        projects[index] = project
-        persist()
-    }
-
-    func delete(_ project: AppProject) {
-        projects.removeAll { $0.id == project.id }
-        // The ASC API key is keyed on the project id; drop it with the project.
-        try? FKKeychainStore.delete(forProjectId: project.id)
-        persist()
-    }
-
-    private func persist() {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(projects) else { return }
-        try? data.write(to: fileURL, options: .atomic)
-    }
+    // App ekleme/silme/düzenleme artık Genel Ayarlar'da (DB). Bu metodlar
+    // FlightKit'in eski editör çağrılarının derlenmesi için no-op olarak kalır.
+    func add(_ project: AppProject) {}
+    func update(_ project: AppProject) {}
+    func delete(_ project: AppProject) {}
 }

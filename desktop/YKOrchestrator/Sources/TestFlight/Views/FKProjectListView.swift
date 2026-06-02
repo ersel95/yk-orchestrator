@@ -13,31 +13,20 @@ import SwiftUI
 struct FKProjectListView: View {
     @Bindable var store: FKProjectStore
     @Binding var selectionID: String?
-    let onAdd: () -> Void
-    let onEdit: (AppProject) -> Void
 
     var body: some View {
         List(selection: $selectionID) {
             ForEach(store.projects) { project in
                 ProjectRow(project: project, store: store)
                     .tag(project.id)
-                    .contextMenu {
-                        Button("Edit…") { onEdit(project) }
-                        Button("Delete", role: .destructive) { store.delete(project) }
-                    }
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("FlightKit")
+        .navigationTitle("TestFlight")
         .overlay {
             if store.projects.isEmpty {
-                ContentUnavailableView("No apps", systemImage: "tray", description: Text("Add your first app to publish."))
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(action: onAdd) { Image(systemName: "plus") }
-                    .help("Add an app")
+                ContentUnavailableView("App yok", systemImage: "tray",
+                    description: Text("Genel Ayarlar'dan bir projeye \"TestFlight yapılandır\" uygulayın."))
             }
         }
     }

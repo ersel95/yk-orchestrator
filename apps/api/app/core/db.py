@@ -25,8 +25,36 @@ def init_db() -> None:
         conn.exec_driver_sql("PRAGMA journal_mode=WAL")
         conn.exec_driver_sql("PRAGMA foreign_keys=ON")
 
+    # create_all var olan tabloya kolon EKLEMEZ — eksik kolonları idempotent ekle
+    _ensure_columns()
+
     # En az bir proje olduğundan emin ol
     _ensure_default_project()
+
+
+def _ensure_columns() -> None:
+    """Modele sonradan eklenen kolonları mevcut DB'ye ALTER ile ekler (veri korunur).
+
+    SQLite `ADD COLUMN` mevcut satırlara DEFAULT uygular; idempotent (PRAGMA ile kontrol).
+    """
+    # tablo -> {kolon: SQL DDL}
+    required: dict[str, dict[str, str]] = {
+        "projects": {
+            "xcode_container_path": "VARCHAR NOT NULL DEFAULT ''",
+            "xcode_scheme": "VARCHAR NOT NULL DEFAULT ''",
+            "xcode_configuration": "VARCHAR NOT NULL DEFAULT ''",
+            "xcode_bundle_id": "VARCHAR NOT NULL DEFAULT ''",
+            "xcode_team_id": "VARCHAR NOT NULL DEFAULT ''",
+            "xcode_environments": "VARCHAR NOT NULL DEFAULT ''",
+        },
+    }
+    with engine.connect() as conn:
+        for table, cols in required.items():
+            existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            for col, ddl in cols.items():
+                if col not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+        conn.commit()
 
 
 def _ensure_default_project() -> None:

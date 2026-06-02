@@ -23,6 +23,12 @@ class ProjectIn(BaseModel):
     git_default_branch: str = "develop"
     fastlane_project_dir: str = ""
     fastlane_lane: str = "beta"
+    xcode_container_path: str = ""
+    xcode_scheme: str = ""
+    xcode_configuration: str = ""
+    xcode_bundle_id: str = ""
+    xcode_team_id: str = ""
+    xcode_environments: str = ""
 
 
 class ProjectPatch(BaseModel):
@@ -36,6 +42,12 @@ class ProjectPatch(BaseModel):
     git_default_branch: str | None = None
     fastlane_project_dir: str | None = None
     fastlane_lane: str | None = None
+    xcode_container_path: str | None = None
+    xcode_scheme: str | None = None
+    xcode_configuration: str | None = None
+    xcode_bundle_id: str | None = None
+    xcode_team_id: str | None = None
+    xcode_environments: str | None = None
     is_archived: bool | None = None
     sort_order: int | None = None
 

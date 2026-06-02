@@ -10,23 +10,19 @@ import SwiftUI
 @MainActor
 struct FKContentView: View {
     @Bindable var store: FKProjectStore
-    @State private var selectionID: String?
-    @State private var editorTarget: ProjectEditorTarget?
+    /// Soldaki ProjectSwitcher'dan gelen aktif proje (DB Project.id).
+    let activeProjectId: Int?
 
+    /// Ayrı bir proje listesi YOK — aktif proje (ProjectSwitcher dropdown) gösterilir.
     private var selectedProject: AppProject? {
-        store.projects.first { $0.id == selectionID }
+        if let id = activeProjectId {
+            return store.projects.first { $0.id == String(id) }
+        }
+        return store.projects.first
     }
 
     var body: some View {
-        NavigationSplitView {
-            FKProjectListView(
-                store: store,
-                selectionID: $selectionID,
-                onAdd: { editorTarget = ProjectEditorTarget(project: nil) },
-                onEdit: { editorTarget = ProjectEditorTarget(project: $0) }
-            )
-            .navigationSplitViewColumnWidth(min: 280, ideal: 320)
-        } detail: {
+        Group {
             if let project = selectedProject {
                 FKProjectDetailView(project: project, store: store)
                     .id(project.id)
@@ -34,34 +30,14 @@ struct FKContentView: View {
                 emptyDetail
             }
         }
-        .sheet(item: $editorTarget) { target in
-            ProjectEditorView(store: store, existing: target.project) { saved in
-                if let saved { selectionID = saved.id }
-                editorTarget = nil
-            }
-            .frame(minWidth: 560, minHeight: 520)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var emptyDetail: some View {
         ContentUnavailableView {
-            Label(store.projects.isEmpty ? "No apps yet" : "Select an app", systemImage: "airplane.departure")
+            Label("TestFlight yapılandırılmadı", systemImage: "airplane.departure")
         } description: {
-            Text(store.projects.isEmpty
-                 ? "Add an app to publish — pick its .xcworkspace or .xcodeproj, then upload to TestFlight or the App Store."
-                 : "Pick an app on the left to view its versions and publish.")
-        } actions: {
-            if store.projects.isEmpty {
-                Button("Add app…") { editorTarget = ProjectEditorTarget(project: nil) }
-                    .buttonStyle(.borderedProminent)
-            }
+            Text("Bu projenin TestFlight bilgisi yok. Genel Ayarlar → Projeler → Düzenle → \"TestFlight yapılandır\" ile klasörü seçip otomatik keşfedin.")
         }
     }
-}
-
-/// Identifiable wrapper so the editor sheet can present either a new project
-/// (`project == nil`) or an existing one for editing.
-struct ProjectEditorTarget: Identifiable {
-    let id = UUID()
-    let project: AppProject?
 }

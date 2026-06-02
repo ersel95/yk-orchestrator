@@ -25,6 +25,14 @@ class Project(SQLModel, table=True):
     fastlane_project_dir: str = ""
     fastlane_lane: str = "beta"
 
+    # Xcode / TestFlight build metadata (FlightKit AppProject ile eşlenir)
+    xcode_container_path: str = ""   # mutlak .xcworkspace/.xcodeproj; boşsa local_repo_path'ten türetilir
+    xcode_scheme: str = ""
+    xcode_configuration: str = ""    # effective default configuration
+    xcode_bundle_id: str = ""
+    xcode_team_id: str = ""
+    xcode_environments: str = ""     # JSON: [{"name","configuration","bundleIdentifier"}]
+
     is_archived: bool = False
     sort_order: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
