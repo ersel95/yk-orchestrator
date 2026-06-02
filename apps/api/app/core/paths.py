@@ -33,8 +33,15 @@ def repo_root() -> Path:
 
 @lru_cache
 def user_data_dir() -> Path:
-    """Bundled modda Application Support, dev modda repo data/."""
-    if is_frozen():
+    """Bundled modda Application Support, dev modda repo data/.
+
+    `YKORCH_DATA_DIR` ENV verilirse (lokal dev'de venv backend'i gerçek
+    bundled config/DB'ye bağlamak için) o yol mutlak öncelikli kullanılır.
+    """
+    override = os.environ.get("YKORCH_DATA_DIR")
+    if override:
+        base = Path(override)
+    elif is_frozen():
         base = Path.home() / "Library" / "Application Support" / APP_NAME
     else:
         base = repo_root() / "apps" / "api" / "data"
@@ -44,7 +51,10 @@ def user_data_dir() -> Path:
 
 @lru_cache
 def user_log_dir() -> Path:
-    if is_frozen():
+    override = os.environ.get("YKORCH_LOG_DIR")
+    if override:
+        base = Path(override)
+    elif is_frozen():
         base = Path.home() / "Library" / "Logs" / APP_NAME
     else:
         base = repo_root() / "logs"

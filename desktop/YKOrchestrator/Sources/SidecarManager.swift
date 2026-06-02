@@ -44,12 +44,13 @@ final class SidecarManager: ObservableObject {
             let baseURL = URL(string: "http://127.0.0.1:\(port)")!
             self.apiBaseURL = baseURL
 
-            let binary = try resolveBackendBinary()
-            let env = buildEnvironment(config: config)
+            let launch = try resolveBackendLaunch(port: port)
+            let env = buildEnvironment(config: config, isDev: launch.isDev)
 
             let proc = Process()
-            proc.executableURL = binary
-            proc.arguments = ["--host", "127.0.0.1", "--port", "\(port)"]
+            proc.executableURL = launch.executable
+            proc.arguments = launch.args
+            if let cwd = launch.cwd { proc.currentDirectoryURL = cwd }
             proc.environment = env
 
             let stdout = Pipe()
@@ -157,33 +158,55 @@ final class SidecarManager: ObservableObject {
         }
     }
 
-    private func resolveBackendBinary() throws -> URL {
-        // 1) Bundle içinden ara (release / Xcode Run with bundled resources)
+    private struct BackendLaunch {
+        let executable: URL
+        let args: [String]
+        let cwd: URL?
+        let isDev: Bool   // true → venv/uvicorn (canlı kaynak), false → PyInstaller binary
+    }
+
+    private func resolveBackendLaunch(port: Int) throws -> BackendLaunch {
+        let portArgs = ["--host", "127.0.0.1", "--port", "\(port)"]
+
+        // 1) Bundle içinden (release / Xcode Run with bundled resources)
         // build-app.sh: cp -R dist/ykorch-api → Resources/backend
-        //   → Resources/backend/ykorch-api (binary) + Resources/backend/_internal/
         if let resourcePath = Bundle.main.resourcePath {
             let bundled = URL(fileURLWithPath: resourcePath)
                 .appendingPathComponent("backend")
                 .appendingPathComponent("ykorch-api")
             if FileManager.default.isExecutableFile(atPath: bundled.path) {
-                return bundled
+                return BackendLaunch(executable: bundled, args: portArgs, cwd: nil, isDev: false)
             }
         }
-        // 2) Dev fallback: build çıktısı (Xcode Run sırasında resource embed edilmemişse)
-        let candidates = [
-            "/Users/\(NSUserName())/Desktop/Automated Report/build/dist/ykorch-api/ykorch-api",
-        ]
-        for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return URL(fileURLWithPath: path)
-            }
+
+        let root = URL(fileURLWithPath: "/Users/\(NSUserName())/Desktop/Automated Report")
+
+        // 2) Dev (en hızlı): lokal .venv + uvicorn ile canlı kaynaktan çalış.
+        //    Python değişikliği PyInstaller rebuild gerektirmez — sadece app restart.
+        let venvPy = root.appendingPathComponent(".venv/bin/python")
+        let apiDir = root.appendingPathComponent("apps/api")
+        if FileManager.default.isExecutableFile(atPath: venvPy.path),
+           FileManager.default.fileExists(atPath: apiDir.appendingPathComponent("app/main.py").path) {
+            return BackendLaunch(
+                executable: venvPy,
+                args: ["-m", "uvicorn", "app.main:app"] + portArgs,
+                cwd: apiDir,
+                isDev: true
+            )
         }
+
+        // 3) Eski dev fallback: PyInstaller dist binary
+        let distBinary = root.appendingPathComponent("build/dist/ykorch-api/ykorch-api")
+        if FileManager.default.isExecutableFile(atPath: distBinary.path) {
+            return BackendLaunch(executable: distBinary, args: portArgs, cwd: nil, isDev: false)
+        }
+
         throw NSError(domain: "YKOrchestrator", code: 1, userInfo: [
-            NSLocalizedDescriptionKey: "ykorch-api binary bulunamadı (bundle veya dev fallback yolu)"
+            NSLocalizedDescriptionKey: "ykorch-api başlatılamadı (bundle / .venv / dist yollarının hiçbiri bulunamadı)"
         ])
     }
 
-    private func buildEnvironment(config: ConfigSnapshot) -> [String: String] {
+    private func buildEnvironment(config: ConfigSnapshot, isDev: Bool) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
 
         // Keychain'den token'lar
@@ -195,6 +218,19 @@ final class SidecarManager: ObservableObject {
 
         // Bundled mod (paths.py is_frozen=true zorlamasa da emniyet)
         env["YKORCH_DEV"] = "0"
+
+        if isDev {
+            // Venv backend kaynak ağacından çalışır → paths.py dev moda düşerdi.
+            // Gerçek bundled config/DB/log'a bağlamak için override geç.
+            let appSupport = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("YK Orchestrator")
+            let logs = FileManager.default
+                .urls(for: .libraryDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("Logs/YK Orchestrator")
+            if let appSupport { env["YKORCH_DATA_DIR"] = appSupport.path }
+            if let logs { env["YKORCH_LOG_DIR"] = logs.path }
+        }
 
         return env
     }
