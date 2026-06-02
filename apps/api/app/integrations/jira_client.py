@@ -208,6 +208,17 @@ class JiraClient:
             log.warning(f"Sprint atama hatası ({r.status_code}): {r.text[:300]}")
         r.raise_for_status()
 
+    async def label_suggestions(self, query: str) -> list[str]:
+        """Mevcut etiketler arasında autocomplete (Server + Cloud uyumlu)."""
+        r = await self._client.get(
+            "/rest/api/2/jql/autocompletedata/suggestions",
+            params={"fieldName": "labels", "fieldValue": query},
+        )
+        if r.status_code >= 400:
+            return []
+        results = r.json().get("results", [])
+        return [s.get("value", "") for s in results if s.get("value")]
+
     async def move_to_backlog(self, key: str) -> None:
         """Issue'yu sprint'ten çıkarıp backlog'a alır."""
         r = await self._client.post(

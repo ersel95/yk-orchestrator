@@ -337,6 +337,14 @@ async def list_versions(
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@router.get("/labels")
+async def list_labels(q: str = "") -> list[str]:
+    try:
+        return await get_jira().label_suggestions(q)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.get("/sprints")
 async def list_sprints(
     project_key: str | None = None, issue_key: str | None = None
