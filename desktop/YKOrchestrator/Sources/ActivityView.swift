@@ -100,13 +100,12 @@ struct ActivityView: View {
 
     private var timeline: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            LazyVStack(alignment: .leading, spacing: 8) {
                 ForEach(entries) { entry in
-                    ActionRow(entry: entry)
-                    Divider()
+                    ActionRow(entry: entry).innerPanel(padding: 10)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(14)
         }
     }
 
@@ -191,8 +190,6 @@ private struct ActionRow: View {
                 }
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
     }
 
     private var iconName: String {

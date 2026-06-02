@@ -45,21 +45,36 @@ struct ChatView: View {
     }
 
     private func messageBubble(_ msg: ChatMessage) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            if msg.role == .user { Spacer(minLength: 40) }
+        HStack(alignment: .top, spacing: 8) {
+            if msg.role == .user { Spacer(minLength: 50) }
+            if msg.role == .assistant {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(.tint).font(.callout).padding(.top, 20)
+            }
             VStack(alignment: msg.role == .user ? .trailing : .leading, spacing: 4) {
                 Text(msg.role == .user ? "Sen" : "Asistan")
                     .font(.caption2).foregroundStyle(.secondary)
-                Text(msg.text)
+                Text(msg.text.isEmpty ? " " : msg.text)
                     .font(.body)
                     .textSelection(.enabled)
-                    .padding(10)
-                    .background(msg.role == .user
-                                ? Color.accentColor.opacity(0.14)
-                                : Color.secondary.opacity(0.10))
-                    .cornerRadius(10)
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .fill(msg.role == .user
+                                  ? Color.accentColor.opacity(0.15)
+                                  : Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.04), radius: 3, x: 0, y: 1)
             }
-            if msg.role == .assistant { Spacer(minLength: 40) }
+            if msg.role == .user {
+                Image(systemName: "person.crop.circle.fill")
+                    .foregroundStyle(.secondary).font(.callout).padding(.top, 20)
+            }
+            if msg.role == .assistant { Spacer(minLength: 50) }
         }
     }
 

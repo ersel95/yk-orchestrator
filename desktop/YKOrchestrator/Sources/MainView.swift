@@ -57,9 +57,10 @@ struct MainView: View {
     private var sidebar: some View {
         VStack(spacing: 0) {
             // Brand + active project picker
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles")
+                        .font(.title3)
                         .foregroundStyle(.tint)
                     Text("YK Orchestrator").font(.headline)
                 }
@@ -80,6 +81,13 @@ struct MainView: View {
                 }
             }
             .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                LinearGradient(
+                    colors: [Color.accentColor.opacity(0.10), Color.accentColor.opacity(0.01)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
             Divider()
 
             // Tabs — List selection ile detail view doğrudan tetiklenir.

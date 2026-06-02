@@ -159,9 +159,7 @@ struct SettingsView: View {
                         Spacer()
                         Button("Düzenle") { editingProject = p }
                     }
-                    .padding(8)
-                    .background(Color.secondary.opacity(0.06))
-                    .cornerRadius(6)
+                    .innerPanel(padding: 10)
                 }
             }
         }
@@ -177,13 +175,11 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func section<C: View>(_ title: String, @ViewBuilder content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.headline)
             content()
         }
-        .padding(14)
-        .background(Color.secondary.opacity(0.03))
-        .cornerRadius(8)
+        .surfaceCard(padding: 16)
     }
 
     private func field(_ label: String, text: Binding<String>) -> some View {

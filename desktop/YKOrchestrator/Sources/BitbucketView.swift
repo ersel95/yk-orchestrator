@@ -85,41 +85,45 @@ struct BitbucketView: View {
         if branches.isEmpty {
             return AnyView(EmptyState("Boş", systemImage: "arrow.triangle.branch", description: "Branch bulunamadı."))
         }
-        return AnyView(
-            List(branches) { b in
-                BBBranchRow(branch: b)
-            }
-            .listStyle(.inset)
-        )
+        return AnyView(cardList(branches) { b in BBBranchRow(branch: b) })
     }
 
     private var commitsList: some View {
         if commits.isEmpty {
             return AnyView(EmptyState("Boş", systemImage: "circle.dotted", description: "Commit bulunamadı."))
         }
-        return AnyView(
-            List(commits) { c in
-                BBCommitRow(commit: c)
-            }
-            .listStyle(.inset)
-        )
+        return AnyView(cardList(commits) { c in BBCommitRow(commit: c) })
     }
 
     private var tagsList: some View {
         if tags.isEmpty {
             return AnyView(EmptyState("Boş", systemImage: "tag", description: "Tag bulunamadı."))
         }
-        return AnyView(
-            List(tags) { t in
-                HStack {
-                    Image(systemName: "tag")
-                    Text(t.displayId).font(.callout.weight(.medium))
-                    Spacer()
-                    if let c = t.latestCommit { Text(c.prefix(8)).font(.caption.monospaced()).foregroundStyle(.secondary) }
-                }
+        return AnyView(cardList(tags) { t in
+            HStack {
+                Image(systemName: "tag").foregroundStyle(.tint)
+                Text(t.displayId).font(.callout.weight(.medium))
+                Spacer()
+                if let c = t.latestCommit { Text(c.prefix(8)).font(.caption.monospaced()).foregroundStyle(.secondary) }
             }
-            .listStyle(.inset)
-        )
+            .innerPanel(padding: 10)
+        })
+    }
+
+    /// Tutarlı kartlı liste — ayraçsız, satırlar hafif panel.
+    private func cardList<T: Identifiable, RowContent: View>(
+        _ items: [T], @ViewBuilder row: @escaping (T) -> RowContent
+    ) -> some View {
+        List {
+            ForEach(items) { item in
+                row(item)
+                    .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     // MARK: - Data
@@ -186,7 +190,7 @@ private struct BBBranchRow: View {
                 }
             }
         }
-        .padding(.vertical, 4)
+        .innerPanel(padding: 10)
     }
 
     private func relative(_ ts: Int) -> String {
@@ -218,7 +222,7 @@ private struct BBCommitRow: View {
                 }
             }
         }
-        .padding(.vertical, 4)
+        .innerPanel(padding: 10)
     }
     private func relative(_ ts: Int) -> String {
         let d = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
