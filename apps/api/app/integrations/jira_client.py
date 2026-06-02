@@ -81,8 +81,8 @@ class JiraClient:
         params: dict[str, Any] = {}
         if expand:
             params["expand"] = ",".join(expand)
-        # transitions + renderedFields + names yararlı
-        params.setdefault("expand", "transitions,renderedFields,names,schema")
+        # transitions + renderedFields(HTML) + names + changelog(history) yararlı
+        params.setdefault("expand", "transitions,renderedFields,names,schema,changelog")
         r = await self._client.get(f"/rest/api/2/issue/{key}", params=params)
         r.raise_for_status()
         return r.json()
@@ -149,6 +149,73 @@ class JiraClient:
         r = await self._client.get("/rest/api/2/statuscategory")
         r.raise_for_status()
         return r.json()
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Priority / fix version / sprint seçenek listeleri + sprint atama (v1.7)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def priorities(self) -> list[dict[str, Any]]:
+        """Global priority şeması — [{id, name, ...}]."""
+        r = await self._client.get("/rest/api/2/priority")
+        r.raise_for_status()
+        return r.json()
+
+    async def project_versions(self, project_key: str) -> list[dict[str, Any]]:
+        """Proje fix version'ları — released/archived bilgisiyle."""
+        r = await self._client.get(f"/rest/api/2/project/{project_key}/versions")
+        r.raise_for_status()
+        return r.json()
+
+    async def boards(self, project_key: str) -> list[dict[str, Any]]:
+        """Projeye bağlı Agile board'lar."""
+        r = await self._client.get(
+            "/rest/agile/1.0/board", params={"projectKeyOrId": project_key, "maxResults": 50}
+        )
+        r.raise_for_status()
+        return r.json().get("values", [])
+
+    async def sprints(
+        self, project_key: str, *, states: str = "active,future"
+    ) -> list[dict[str, Any]]:
+        """Projenin board'larındaki active+future sprint'leri (id'ye göre tekilleştirilmiş)."""
+        seen: dict[int, dict[str, Any]] = {}
+        for board in await self.boards(project_key):
+            board_id = board.get("id")
+            if board_id is None:
+                continue
+            try:
+                r = await self._client.get(
+                    f"/rest/agile/1.0/board/{board_id}/sprint",
+                    params={"state": states, "maxResults": 50},
+                )
+                if r.status_code >= 400:
+                    # Kanban board'larda sprint endpoint'i 400 döner — atla
+                    continue
+                for sp in r.json().get("values", []):
+                    sid = sp.get("id")
+                    if sid is not None and sid not in seen:
+                        seen[sid] = sp
+            except Exception as e:
+                log.warning(f"Sprint listesi alınamadı (board={board_id}): {e}")
+        return list(seen.values())
+
+    async def move_to_sprint(self, sprint_id: int, key: str) -> None:
+        """Issue'yu sprint'e taşır (Agile API — customfield id'sinden bağımsız)."""
+        r = await self._client.post(
+            f"/rest/agile/1.0/sprint/{sprint_id}/issue", json={"issues": [key]}
+        )
+        if r.status_code >= 400:
+            log.warning(f"Sprint atama hatası ({r.status_code}): {r.text[:300]}")
+        r.raise_for_status()
+
+    async def move_to_backlog(self, key: str) -> None:
+        """Issue'yu sprint'ten çıkarıp backlog'a alır."""
+        r = await self._client.post(
+            "/rest/agile/1.0/backlog/issue", json={"issues": [key]}
+        )
+        if r.status_code >= 400:
+            log.warning(f"Backlog'a taşıma hatası ({r.status_code}): {r.text[:300]}")
+        r.raise_for_status()
 
     async def myself(self) -> dict[str, Any]:
         r = await self._client.get("/rest/api/2/myself")

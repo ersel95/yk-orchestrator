@@ -118,7 +118,12 @@ async def list_tasks(
             else:
                 jql_parts.append(f'assignee = "{_jql_escape(assignee)}"')
         if status_category:
-            jql_parts.append(f'statusCategory = "{_jql_escape(status_category)}"')
+            cats = [c.strip() for c in status_category.split(",") if c.strip()]
+            if len(cats) == 1:
+                jql_parts.append(f'statusCategory = "{_jql_escape(cats[0])}"')
+            elif len(cats) > 1:
+                quoted = ",".join(f'"{_jql_escape(c)}"' for c in cats)
+                jql_parts.append(f"statusCategory in ({quoted})")
         if status:
             jql_parts.append(f'status = "{_jql_escape(status)}"')
         if text:
@@ -128,9 +133,11 @@ async def list_tasks(
         if issue_type:
             jql_parts.append(f'issuetype = "{_jql_escape(issue_type)}"')
 
-        final_jql = " AND ".join(jql_parts) if jql_parts else "ORDER BY updated DESC"
-        if jql_parts:
-            final_jql += f" ORDER BY {order_by}"
+        # Hiç kısıt yoksa (proje key'i tanımsız + filtre yok) sınırsız tarama
+        # yapma — Jira'yı timeout'a sokar. Güvenli default: kullanıcının kendi işleri.
+        if not jql_parts:
+            jql_parts.append("assignee = currentUser()")
+        final_jql = " AND ".join(jql_parts) + f" ORDER BY {order_by}"
     else:
         final_jql = jql
 
@@ -138,7 +145,7 @@ async def list_tasks(
         issues = await get_jira().search_jql(final_jql, max_results=max_results)
         return [get_jira().normalize(issue, get_jira().base) for issue in issues]
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Jira'ya erişilemedi: {e}")
+        raise HTTPException(status_code=503, detail=f"Jira'ya erişilemedi: {type(e).__name__}: {e}")
 
 
 @router.get("/task/{key}")
@@ -146,7 +153,7 @@ async def get_task(key: str) -> dict:
     try:
         return await get_jira().get_issue(key)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Jira'ya erişilemedi: {e}")
+        raise HTTPException(status_code=503, detail=f"Jira'ya erişilemedi: {type(e).__name__}: {e}")
 
 
 @router.get("/task/{key}/transitions")
@@ -297,13 +304,93 @@ async def me() -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Priority / fix version / sprint seçenekleri + sprint atama (v1.7)
+# ─────────────────────────────────────────────────────────────────────────
+
+def _project_key_from(issue_key: str | None, project_key: str | None) -> str:
+    """Verilen project_key yoksa issue_key prefix'inden türet (örn ABC-123 → ABC)."""
+    if project_key:
+        return project_key
+    if issue_key and "-" in issue_key:
+        return issue_key.split("-", 1)[0]
+    return issue_key or ""
+
+
+@router.get("/priorities")
+async def list_priorities() -> list[dict]:
+    try:
+        return await get_jira().priorities()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/versions")
+async def list_versions(
+    project_key: str | None = None, issue_key: str | None = None
+) -> list[dict]:
+    pk = _project_key_from(issue_key, project_key)
+    if not pk:
+        raise HTTPException(status_code=400, detail="project_key veya issue_key gerekli")
+    try:
+        return await get_jira().project_versions(pk)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/sprints")
+async def list_sprints(
+    project_key: str | None = None, issue_key: str | None = None
+) -> list[dict]:
+    pk = _project_key_from(issue_key, project_key)
+    if not pk:
+        raise HTTPException(status_code=400, detail="project_key veya issue_key gerekli")
+    try:
+        return await get_jira().sprints(pk)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+class SprintBody(BaseModel):
+    sprint_id: int | None = None  # None → backlog'a al
+    project_id: int | None = None
+
+
+@router.post("/task/{key}/sprint")
+async def assign_sprint(key: str, body: SprintBody) -> dict:
+    try:
+        if body.sprint_id is None:
+            await get_jira().move_to_backlog(key)
+        else:
+            await get_jira().move_to_sprint(body.sprint_id, key)
+        log_action(
+            action_type="jira.sprint",
+            target_kind="jira_issue",
+            target_id=key,
+            payload={"sprint_id": body.sprint_id},
+            project_id=body.project_id,
+        )
+        return {"ok": True, "sprint_id": body.sprint_id}
+    except Exception as e:
+        log_action(
+            action_type="jira.sprint",
+            target_kind="jira_issue",
+            target_id=key,
+            payload={"sprint_id": body.sprint_id},
+            outcome="failure",
+            error=str(e),
+            project_id=body.project_id,
+        )
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Branch oluşturma — Jira task'tan Bitbucket'a
 # ─────────────────────────────────────────────────────────────────────────
 
 class CreateBranchBody(BaseModel):
     repo: str | None = None
     workspace: str | None = None
-    source_branch: str = "develop"
+    source_branch: str | None = None  # None → projenin git_default_branch
     branch_prefix: str = "feature"
     project_id: int | None = None
 
@@ -334,19 +421,22 @@ async def create_branch_from_task(key: str, body: CreateBranchBody) -> dict:
         slug = _slugify(summary)
         branch_name = f"{body.branch_prefix}/{key}-{slug}".lower()
 
-        # Workspace/repo: body verirse onu, yoksa aktif projenin ayarı
+        # Workspace/repo/source: body verirse onu, yoksa aktif projenin ayarı
         ws = body.workspace
         repo = body.repo
-        if not ws or not repo:
+        src = body.source_branch
+        if not ws or not repo or not src:
             pid = resolve_project_id(body.project_id)
             with Session(engine) as session:
                 p = session.get(Project, pid)
                 ws = ws or (p.bitbucket_workspace if p else None)
                 repo = repo or (p.bitbucket_repo if p else None)
+                if not src:
+                    src = (p.git_default_branch if p else None) or "develop"
 
         res = await get_bitbucket().create_branch(
             branch_name=branch_name,
-            source_branch=body.source_branch,
+            source_branch=src,
             workspace=ws,
             repo=repo,
         )
@@ -360,7 +450,7 @@ async def create_branch_from_task(key: str, body: CreateBranchBody) -> dict:
                 "jira_key": key,
                 "repo": repo,
                 "workspace": ws,
-                "source_branch": body.source_branch,
+                "source_branch": src,
                 "branch_name": branch_name,
             },
             outcome="success" if ok else "failure",
@@ -375,7 +465,7 @@ async def create_branch_from_task(key: str, body: CreateBranchBody) -> dict:
         try:
             comment_body = (
                 f"🌿 Branch oluşturuldu: `{branch_name}` "
-                f"(repo: `{ws}/{repo}`, source: `{body.source_branch}`)"
+                f"(repo: `{ws}/{repo}`, source: `{src}`)"
             )
             await get_jira().add_comment(key, comment_body)
         except Exception:
@@ -386,7 +476,7 @@ async def create_branch_from_task(key: str, body: CreateBranchBody) -> dict:
             "branch": branch_name,
             "repo": repo,
             "workspace": ws,
-            "source_branch": body.source_branch,
+            "source_branch": src,
         }
     except HTTPException:
         raise

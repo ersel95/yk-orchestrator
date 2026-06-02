@@ -10,9 +10,9 @@ struct JiraView: View {
     @State private var error: String?
     @State private var selectedTask: APIClient.JiraTask?
 
-    // Filtreler
-    @State private var assigneeFilter: AssigneeOption = .all
-    @State private var categoryFilter: CategoryOption = .all
+    // Filtreler — kişi varsayılan: bana atanmış
+    @State private var assigneeFilter: AssigneeOption = .mine
+    @State private var categoryFilters: Set<CategoryOption> = []  // boş = hepsi
     @State private var textFilter: String = ""
     @State private var jqlOverride: String = ""
     @State private var advancedOpen: Bool = false
@@ -30,41 +30,46 @@ struct JiraView: View {
         }
     }
     enum CategoryOption: String, CaseIterable, Hashable {
-        case all = "Hepsi"
         case todo = "To Do"
         case inProgress = "In Progress"
         case done = "Done"
-        var queryValue: String? {
-            switch self {
-            case .all: return nil
-            default: return rawValue
-            }
-        }
     }
 
     var body: some View {
-        NavigationSplitView {
+        // Dış MainView zaten NavigationSplitView — burada İKİNCİ bir split iç içe
+        // girince ortada hayalet boş bir kolon oluşuyor. İki kolonlu HStack kullanıyoruz.
+        HStack(spacing: 0) {
             VStack(spacing: 0) {
                 filterBar
                 Divider()
                 content
             }
-            .frame(minWidth: 420, idealWidth: 480)
-        } detail: {
-            if let t = selectedTask {
-                JiraDetailView(client: client, task: t, projectId: projectId,
-                               onChanged: { Task { await refresh() } })
-                    .id(t.id)
-            } else {
-                EmptyState("Seç", systemImage: "arrow.left",
-                           description: "Soldan bir task seç")
+            .frame(width: 460)
+            Divider()
+            Group {
+                if let t = selectedTask {
+                    JiraDetailView(client: client, task: t, projectId: projectId,
+                                   onChanged: { Task { await refresh() } })
+                        .id(t.id)
+                } else {
+                    EmptyState("Seç", systemImage: "arrow.left",
+                               description: "Soldan bir task seç")
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: filterKey) { await refresh() }
     }
 
     private var filterKey: String {
-        "\(projectId ?? 0)-\(assigneeFilter.rawValue)-\(categoryFilter.rawValue)-\(textFilter)-\(jqlOverride)"
+        let cats = categoryFilters.map(\.rawValue).sorted().joined(separator: ",")
+        return "\(projectId ?? 0)-\(assigneeFilter.rawValue)-\(cats)-\(textFilter)-\(jqlOverride)"
+    }
+
+    private var categoryLabel: String {
+        if categoryFilters.isEmpty { return "Durum: Hepsi" }
+        if categoryFilters.count == 1 { return categoryFilters.first!.rawValue }
+        return "\(categoryFilters.count) durum"
     }
 
     // MARK: - Filter bar
@@ -76,9 +81,24 @@ struct JiraView: View {
                     ForEach(AssigneeOption.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }.frame(maxWidth: 160).labelsHidden()
 
-                Picker("", selection: $categoryFilter) {
-                    ForEach(CategoryOption.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.frame(maxWidth: 140).labelsHidden()
+                Menu {
+                    ForEach(CategoryOption.allCases, id: \.self) { c in
+                        Button {
+                            if categoryFilters.contains(c) { categoryFilters.remove(c) }
+                            else { categoryFilters.insert(c) }
+                        } label: {
+                            if categoryFilters.contains(c) { Label(c.rawValue, systemImage: "checkmark") }
+                            else { Text(c.rawValue) }
+                        }
+                    }
+                    if !categoryFilters.isEmpty {
+                        Divider()
+                        Button("Temizle") { categoryFilters.removeAll() }
+                    }
+                } label: {
+                    Text(categoryLabel)
+                }
+                .frame(maxWidth: 150)
 
                 TextField("Ara (summary/desc)", text: $textFilter)
                     .textFieldStyle(.roundedBorder)
@@ -111,7 +131,7 @@ struct JiraView: View {
 
     @ViewBuilder
     private var content: some View {
-        if loading && tasks.isEmpty {
+        if loading {
             ProgressView("Jira'dan task'lar çekiliyor...").frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error {
             VStack(spacing: 12) {
@@ -133,19 +153,45 @@ struct JiraView: View {
 
     private func refresh() async {
         loading = true; error = nil
-        defer { loading = false }
         do {
-            tasks = try await client.listJiraTasks(
+            let result = try await client.listJiraTasks(
                 projectId: projectId,
                 jql: jqlOverride.isEmpty ? nil : jqlOverride,
                 assignee: assigneeFilter.queryValue,
-                statusCategory: categoryFilter.queryValue,
+                statusCategory: categoryFilters.isEmpty ? nil : categoryFilters.map(\.rawValue).joined(separator: ","),
                 text: textFilter.isEmpty ? nil : textFilter,
                 maxResults: 200
             )
+            // "Bana atanmış" görünümünde durum önceliğine göre sırala:
+            // In Progress → To Do → diğer → Done (eşitlikte backend sırası = updated DESC korunur).
+            if assigneeFilter == .mine {
+                tasks = result.enumerated()
+                    .sorted { a, b in
+                        let ra = Self.statusRank(a.element.status), rb = Self.statusRank(b.element.status)
+                        return ra != rb ? ra < rb : a.offset < b.offset
+                    }
+                    .map(\.element)
+            } else {
+                tasks = result
+            }
+            loading = false
         } catch {
+            // İptal: yeni bir yükleme devraldı — loading'i kapatma, spinner dönsün.
+            if error.isCancellation { return }
             self.error = vpnAwareMessage(error)
+            loading = false
         }
+    }
+
+    /// Durum öncelik sırası: In Progress(0) → To Do(1) → diğer(2) → Done(3).
+    private static func statusRank(_ status: String) -> Int {
+        let s = status.lowercased()
+        if s.contains("done") || s.contains("closed") || s.contains("resolved")
+            || s.contains("tamam") || s.contains("kapal") { return 3 }
+        if s.contains("progress") { return 0 }
+        if s.contains("to do") || s.contains("todo") || s.contains("open")
+            || s.contains("backlog") || s.contains("yapılacak") || s.contains("açık") { return 1 }
+        return 2
     }
 
     private func vpnAwareMessage(_ error: Error) -> String {

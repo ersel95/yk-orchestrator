@@ -20,9 +20,18 @@ struct JiraDetailView: View {
     @State private var descriptionDraft: String = ""
     @State private var editingAssignee: Bool = false
     @State private var assigneeQuery: String = ""
+    @State private var assigneeSearchTask: Task<Void, Never>?
 
     @State private var labelsDraft: String = ""
     @State private var labelsEditing: Bool = false
+
+    // Priority / sprint / fix versions seçenekleri (lazy yüklenir)
+    @State private var priorities: [APIClient.JiraPriority] = []
+    @State private var sprints: [APIClient.JiraSprint] = []
+    @State private var versions: [APIClient.JiraVersion] = []
+    @State private var fixVersionsEditing: Bool = false
+    @State private var fixVersionsDraft: Set<String> = []
+    @State private var sprintLabel: String?  // optimistik gösterim (detail raw'da sprint decode edilmiyor)
 
     @State private var commentDraft: String = ""
     @State private var commentInflight: Bool = false
@@ -41,21 +50,29 @@ struct JiraDetailView: View {
                     Button("Tekrar dene") { Task { await load() } }
                 } else if let d = detail, let f = d.fields {
                     headerSection(d, f)
+                    if let msg = actionMessage {
+                        Label(msg, systemImage: "info.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .padding(.vertical, 2)
+                    }
                     Divider()
                     statusBar(f)
                     summarySection(f)
-                    descriptionSection(f)
+                    descriptionSection(f, d.renderedFields)
                     sidebarFields(f)
+                    attachmentsSection(f)
                     Divider()
-                    commentSection
-                    if let msg = actionMessage {
-                        Text(msg).font(.caption).foregroundStyle(.secondary)
-                    }
+                    commentsSection(f, d.renderedFields)
+                    commentComposer
+                    Divider()
+                    historySection(d.changelog)
                 }
             }
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
         }
-        .task(id: task.id) { await load() }
+        .task(id: task.id) { sprintLabel = task.sprint; await load() }
         .navigationTitle("\(task.issue_key) — \(task.summary)")
         .sheet(isPresented: $showAgentSheet) {
             AgentSheet(
@@ -106,23 +123,32 @@ struct JiraDetailView: View {
     }
 
     private func statusBar(_ f: APIClient.JiraIssueDetail.JiraFields) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Durum").font(.caption).foregroundStyle(.secondary)
-                Text(f.status?.name ?? "—").font(.callout.weight(.medium))
-                Spacer()
-            }
-            HStack(spacing: 6) {
-                ForEach(transitions) { tr in
-                    Button {
-                        Task { await doTransition(tr) }
-                    } label: {
-                        Text(tr.name).font(.caption)
+        HStack(spacing: 8) {
+            Text("Durum").font(.caption).foregroundStyle(.secondary)
+            Menu {
+                if transitions.isEmpty {
+                    Text("Geçiş yok")
+                } else {
+                    ForEach(transitions) { tr in
+                        Button {
+                            Task { await doTransition(tr) }
+                        } label: {
+                            // tr.name = aksiyon (Done/On Hold…); to.name = hedef durum
+                            Label(tr.to?.name ?? tr.name, systemImage: "arrow.right.circle")
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(actionInFlight)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(f.status?.name ?? "—").font(.callout.weight(.medium))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(actionInFlight || transitions.isEmpty)
+            Spacer()
         }
     }
 
@@ -156,7 +182,8 @@ struct JiraDetailView: View {
         }
     }
 
-    private func descriptionSection(_ f: APIClient.JiraIssueDetail.JiraFields) -> some View {
+    private func descriptionSection(_ f: APIClient.JiraIssueDetail.JiraFields,
+                                    _ rendered: APIClient.JiraIssueDetail.RenderedFields?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("Açıklama").font(.caption).foregroundStyle(.secondary)
@@ -179,6 +206,8 @@ struct JiraDetailView: View {
                     .font(.callout.monospaced())
                     .frame(minHeight: 120, maxHeight: 280)
                     .border(Color.secondary.opacity(0.3))
+            } else if let html = rendered?.description, !html.isEmpty {
+                HTMLText(html: html)   // Jira formatlı (HTML) açıklama
             } else {
                 Text(f.description ?? "(boş)")
                     .font(.callout)
@@ -207,11 +236,13 @@ struct JiraDetailView: View {
                     }
                 }
                 if editingAssignee {
-                    TextField("Kullanıcı ara", text: $assigneeQuery)
+                    TextField("İsim yaz (ör. Erse)", text: $assigneeQuery)
                         .textFieldStyle(.roundedBorder)
+                        .onChange(of: assigneeQuery) { _, _ in scheduleAssigneeSearch() }
                         .onSubmit { Task { await fetchAssignableUsers() } }
                     if assignableUsers.isEmpty {
-                        Text("Yazıp Enter'a bas").font(.caption).foregroundStyle(.secondary)
+                        Text(assigneeQuery.count < 2 ? "En az 2 harf yaz" : "Aranıyor…")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     ForEach(assignableUsers.prefix(8)) { u in
                         Button {
@@ -272,6 +303,10 @@ struct JiraDetailView: View {
                 }
             }
 
+            prioritySection(f)
+            sprintSection(f)
+            fixVersionsSection(f)
+
             // Reporter (read-only)
             if let r = f.reporter {
                 VStack(alignment: .leading, spacing: 2) {
@@ -282,7 +317,121 @@ struct JiraDetailView: View {
         }
     }
 
-    private var commentSection: some View {
+    private func prioritySection(_ f: APIClient.JiraIssueDetail.JiraFields) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Öncelik").font(.caption).foregroundStyle(.secondary)
+            Menu {
+                ForEach(priorities) { p in
+                    Button {
+                        Task { await setPriority(p.name) }
+                    } label: {
+                        if f.priority?.name == p.name {
+                            Label(p.name, systemImage: "checkmark")
+                        } else {
+                            Text(p.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Label(f.priority?.name ?? "—", systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(actionInFlight)
+            .task { if priorities.isEmpty { await loadPriorities() } }
+        }
+    }
+
+    private func sprintSection(_ f: APIClient.JiraIssueDetail.JiraFields) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Sprint").font(.caption).foregroundStyle(.secondary)
+            Menu {
+                Button { Task { await setSprint(nil, label: "Backlog") } } label: {
+                    Text("Backlog (sprint yok)")
+                }
+                if !sprints.isEmpty { Divider() }
+                ForEach(sprints) { sp in
+                    Button { Task { await setSprint(sp.id, label: sp.name) } } label: {
+                        Text(sp.state == "active" ? "\(sp.name)  • aktif" : sp.name)
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Label(sprintLabel ?? "Backlog", systemImage: "flag.checkered")
+                        .font(.callout)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(actionInFlight)
+            .task { if sprints.isEmpty { await loadSprints() } }
+        }
+    }
+
+    private func fixVersionsSection(_ f: APIClient.JiraIssueDetail.JiraFields) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Fix Versions").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if fixVersionsEditing {
+                    Button("Kaydet") { Task { await saveFixVersions() } }
+                        .buttonStyle(.borderedProminent).disabled(actionInFlight)
+                    Button("İptal") { fixVersionsEditing = false }
+                } else {
+                    Button {
+                        fixVersionsDraft = Set((f.fixVersions ?? []).compactMap { $0.id })
+                        fixVersionsEditing = true
+                        Task { await loadVersions() }
+                    } label: { Image(systemName: "pencil") }
+                        .buttonStyle(.borderless)
+                }
+            }
+            if fixVersionsEditing {
+                let selectable = versions.filter { $0.archived != true }
+                if selectable.isEmpty {
+                    Text("Yükleniyor / versiyon yok").font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(selectable) { v in
+                    Button {
+                        if fixVersionsDraft.contains(v.id) { fixVersionsDraft.remove(v.id) }
+                        else { fixVersionsDraft.insert(v.id) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: fixVersionsDraft.contains(v.id) ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(fixVersionsDraft.contains(v.id) ? Color.accentColor : .secondary)
+                            Text(v.name).font(.callout)
+                            if v.released == true {
+                                Text("released").font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 2)
+                }
+            } else if let vs = f.fixVersions, !vs.isEmpty {
+                HStack {
+                    ForEach(vs, id: \.self) { v in
+                        Text(v.name ?? "?").font(.caption)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.15))
+                            .cornerRadius(3)
+                    }
+                }
+            } else {
+                Text("(yok)").font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var commentComposer: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Yorum Ekle").font(.callout.weight(.medium))
             TextEditor(text: $commentDraft)
@@ -302,6 +451,134 @@ struct JiraDetailView: View {
         }
     }
 
+    // MARK: - Yorumlar / Ekler / Geçmiş
+
+    private func commentsSection(_ f: APIClient.JiraIssueDetail.JiraFields,
+                                 _ rendered: APIClient.JiraIssueDetail.RenderedFields?) -> some View {
+        let comments = f.comment?.comments ?? []
+        // id → rendered HTML eşlemesi
+        let renderedById: [String: String] = Dictionary(
+            uniqueKeysWithValues: (rendered?.comment?.comments ?? []).compactMap { rc in
+                (rc.id != nil && rc.body != nil) ? (rc.id!, rc.body!) : nil
+            }
+        )
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Yorumlar (\(comments.count))").font(.callout.weight(.medium))
+            if comments.isEmpty {
+                Text("Henüz yorum yok").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(comments) { c in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "person.circle.fill").foregroundStyle(.tint)
+                            Text(c.author?.displayName ?? c.author?.name ?? "?")
+                                .font(.caption.weight(.semibold))
+                            Text(prettyDate(c.created)).font(.caption2).foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        if let html = renderedById[c.id], !html.isEmpty {
+                            HTMLText(html: html)
+                        } else {
+                            Text(c.body ?? "").font(.callout).textSelection(.enabled)
+                        }
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.06))
+                    .cornerRadius(6)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func attachmentsSection(_ f: APIClient.JiraIssueDetail.JiraFields) -> some View {
+        let atts = f.attachment ?? []
+        if !atts.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Ekler (\(atts.count))").font(.callout.weight(.medium))
+                ForEach(atts) { a in
+                    HStack(spacing: 8) {
+                        Image(systemName: iconForMime(a.mimeType))
+                            .foregroundStyle(.tint)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(a.filename ?? "ek").font(.callout)
+                            HStack(spacing: 6) {
+                                if let s = a.size { Text(humanSize(s)).font(.caption2).foregroundStyle(.secondary) }
+                                Text(prettyDate(a.created)).font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if let urlStr = a.content, let url = URL(string: urlStr) {
+                            Link("Aç", destination: url).font(.caption)
+                        }
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.06))
+                    .cornerRadius(6)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func historySection(_ changelog: APIClient.JiraIssueDetail.Changelog?) -> some View {
+        let histories = changelog?.histories ?? []
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Geçmiş").font(.callout.weight(.medium))
+            if histories.isEmpty {
+                Text("Geçmiş kaydı yok").font(.caption).foregroundStyle(.secondary)
+            } else {
+                // En yeni üstte
+                ForEach(histories.reversed()) { h in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(h.author?.displayName ?? h.author?.name ?? "?")
+                                .font(.caption.weight(.semibold))
+                            Text(prettyDate(h.created)).font(.caption2).foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        ForEach(Array((h.items ?? []).enumerated()), id: \.offset) { _, item in
+                            HistoryItemRow(
+                                field: item.field ?? "",
+                                from: item.fromString ?? "—",
+                                to: item.toString ?? "—"
+                            )
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            }
+        }
+    }
+
+    // ISO8601 → kısa okunur tarih
+    private func prettyDate(_ iso: String?) -> String {
+        guard let iso else { return "" }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+        guard let date else { return String(iso.prefix(16)) }
+        let out = DateFormatter()
+        out.dateFormat = "dd.MM.yyyy HH:mm"
+        return out.string(from: date)
+    }
+
+    private func humanSize(_ bytes: Int) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        if bytes < 1024 * 1024 { return "\(bytes / 1024) KB" }
+        return String(format: "%.1f MB", Double(bytes) / 1024 / 1024)
+    }
+
+    private func iconForMime(_ mime: String?) -> String {
+        let m = (mime ?? "").lowercased()
+        if m.hasPrefix("image/") { return "photo" }
+        if m.contains("pdf") { return "doc.richtext" }
+        if m.contains("zip") || m.contains("compress") { return "doc.zipper" }
+        return "paperclip"
+    }
+
     // MARK: - Data calls
 
     private func load() async {
@@ -314,6 +591,7 @@ struct JiraDetailView: View {
             self.detail = d
             self.transitions = tr
         } catch {
+            if error.isCancellation { return }  // yeni yükleme başladı; iptali yut
             self.error = vpnAwareMessage(error)
         }
     }
@@ -370,6 +648,18 @@ struct JiraDetailView: View {
         } catch { actionMessage = "Hata: \(error.localizedDescription)" }
     }
 
+    /// Yazarken (debounce'lu) kişi araması — Jira'nın default davranışı gibi.
+    private func scheduleAssigneeSearch() {
+        assigneeSearchTask?.cancel()
+        let q = assigneeQuery.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 2 else { assignableUsers = []; return }
+        assigneeSearchTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)  // 300ms debounce
+            if Task.isCancelled { return }
+            await fetchAssignableUsers()
+        }
+    }
+
     private func fetchAssignableUsers() async {
         do {
             let project = String(task.issue_key.split(separator: "-").first ?? "")
@@ -377,6 +667,7 @@ struct JiraDetailView: View {
                 project: project, issueKey: task.issue_key, query: assigneeQuery
             )
         } catch {
+            if error.isCancellation { return }
             actionMessage = "Kullanıcı listesi: \(error.localizedDescription)"
         }
     }
@@ -402,11 +693,115 @@ struct JiraDetailView: View {
     }
 
     private func createBranch() async {
-        actionInFlight = true; actionMessage = nil
+        actionInFlight = true; actionMessage = "Branch oluşturuluyor…"
         defer { actionInFlight = false }
         do {
             let res = try await client.createBranchFromJira(task.issue_key, projectId: projectId)
-            actionMessage = "Branch: \(res.branch ?? "?")"
-        } catch { actionMessage = "Branch: \(error.localizedDescription)" }
+            actionMessage = "✅ Branch oluşturuldu: \(res.branch ?? "?")  (source: \(res.source_branch ?? "?"))"
+            await load()  // yeni yorum (branch link) görünsün
+        } catch {
+            if error.isCancellation { return }
+            actionMessage = "⚠️ Branch oluşturulamadı: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Priority / sprint / fix versions
+
+    private func loadPriorities() async {
+        do { priorities = try await client.listJiraPriorities() }
+        catch { actionMessage = "Öncelik listesi: \(error.localizedDescription)" }
+    }
+
+    private func loadSprints() async {
+        do { sprints = try await client.listJiraSprints(issueKey: task.issue_key) }
+        catch { actionMessage = "Sprint listesi: \(error.localizedDescription)" }
+    }
+
+    private func loadVersions() async {
+        do { versions = try await client.listJiraVersions(issueKey: task.issue_key) }
+        catch { actionMessage = "Versiyon listesi: \(error.localizedDescription)" }
+    }
+
+    private func setPriority(_ name: String) async {
+        actionInFlight = true; actionMessage = nil
+        defer { actionInFlight = false }
+        do {
+            try await client.setJiraPriority(task.issue_key, priorityName: name, projectId: projectId)
+            await load(); onChanged()
+        } catch { actionMessage = "Hata: \(error.localizedDescription)" }
+    }
+
+    private func setSprint(_ sprintId: Int?, label: String) async {
+        actionInFlight = true; actionMessage = nil
+        defer { actionInFlight = false }
+        do {
+            try await client.setJiraSprint(task.issue_key, sprintId: sprintId, projectId: projectId)
+            sprintLabel = label
+            onChanged()
+        } catch { actionMessage = "Hata: \(error.localizedDescription)" }
+    }
+
+    private func saveFixVersions() async {
+        actionInFlight = true; actionMessage = nil
+        defer { actionInFlight = false }
+        do {
+            try await client.setJiraFixVersions(
+                task.issue_key, versionIds: Array(fixVersionsDraft), projectId: projectId
+            )
+            fixVersionsEditing = false
+            await load()
+        } catch { actionMessage = "Hata: \(error.localizedDescription)" }
+    }
+}
+
+/// Geçmiş satırı — uzun değer değişikliklerini kısa önizler, "Göster" ile açar.
+private struct HistoryItemRow: View {
+    let field: String
+    let from: String
+    let to: String
+    @State private var expanded = false
+
+    private var isLong: Bool { from.count + to.count > 80 }
+
+    var body: some View {
+        if isLong {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(field).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(expanded ? "Gizle" : "Göster") { withAnimation { expanded.toggle() } }
+                        .font(.caption2).buttonStyle(.borderless)
+                }
+                if expanded {
+                    Text(from).font(.caption2).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Label("yeni değer", systemImage: "arrow.down").font(.caption2).foregroundStyle(.tertiary)
+                    Text(to).font(.caption2)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Text("\(preview(from)) → \(preview(to))")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.05))
+            .cornerRadius(5)
+        } else {
+            HStack(spacing: 4) {
+                Text(field).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                Text(from).font(.caption2).foregroundStyle(.secondary)
+                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                Text(to).font(.caption2)
+            }
+        }
+    }
+
+    private func preview(_ s: String) -> String {
+        let one = s.replacingOccurrences(of: "\n", with: " ")
+        return one.count > 40 ? String(one.prefix(40)) + "…" : one
     }
 }

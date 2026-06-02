@@ -196,6 +196,13 @@ extension APIClient {
         let git_default_branch: String
         let fastlane_project_dir: String
         let fastlane_lane: String
+        // Xcode / TestFlight (geriye-uyumlu: eski backend döndürmezse nil)
+        let xcode_container_path: String?
+        let xcode_scheme: String?
+        let xcode_configuration: String?
+        let xcode_bundle_id: String?
+        let xcode_team_id: String?
+        let xcode_environments: String?
         let is_archived: Bool
         let sort_order: Int
     }
@@ -203,12 +210,41 @@ extension APIClient {
         let projects: [ProjectInfo]
         let active_id: Int?
     }
+
+    /// PATCH body — yalnızca dolu (non-nil) alanlar JSON'a girer (Codable encodeIfPresent),
+    /// backend `model_dump(exclude_unset=True)` ile uyumlu.
+    struct ProjectPatchBody: Encodable {
+        var name: String?
+        var slug: String?
+        var jira_project_keys: String?
+        var bitbucket_workspace: String?
+        var bitbucket_repo: String?
+        var local_repo_path: String?
+        var git_default_branch: String?
+        var fastlane_project_dir: String?
+        var fastlane_lane: String?
+        var xcode_container_path: String?
+        var xcode_scheme: String?
+        var xcode_configuration: String?
+        var xcode_bundle_id: String?
+        var xcode_team_id: String?
+        var xcode_environments: String?
+    }
+
     func listProjects() async throws -> ProjectListResponse {
         try await get("api/projects")
     }
     func activateProject(id: Int) async throws {
         struct Empty: Encodable {}
         try await postVoid("api/projects/\(id)/activate", body: Empty())
+    }
+    @discardableResult
+    func patchProject(id: Int, _ body: ProjectPatchBody) async throws -> ProjectInfo {
+        try await patch("api/projects/\(id)", body: body)
+    }
+    func createProject(name: String, slug: String) async throws -> ProjectInfo {
+        struct Body: Encodable { let name: String; let slug: String }
+        return try await post("api/projects", body: Body(name: name, slug: slug))
     }
 }
 
@@ -711,6 +747,8 @@ extension APIClient {
         let key: String
         let fields: JiraFields?
         let transitions: [JiraTransition]?
+        let renderedFields: RenderedFields?   // HTML (expand=renderedFields)
+        let changelog: Changelog?             // history (expand=changelog)
 
         struct JiraFields: Decodable {
             let summary: String?
@@ -721,6 +759,9 @@ extension APIClient {
             let issuetype: NamedRef?
             let assignee: JiraUser?
             let reporter: JiraUser?
+            let fixVersions: [NamedRef]?
+            let comment: CommentField?
+            let attachment: [JiraAttachment]?
             let created: String?
             let updated: String?
         }
@@ -730,6 +771,47 @@ extension APIClient {
             let displayName: String?
             let emailAddress: String?
             let accountId: String?
+        }
+
+        // Yorumlar
+        struct CommentField: Decodable { let comments: [JiraComment]?; let total: Int? }
+        struct JiraComment: Decodable, Identifiable, Hashable {
+            let id: String
+            let author: JiraUser?
+            let body: String?       // wiki/raw
+            let created: String?
+            let updated: String?
+        }
+        // Ekler
+        struct JiraAttachment: Decodable, Identifiable, Hashable {
+            let id: String
+            let filename: String?
+            let size: Int?
+            let created: String?
+            let mimeType: String?
+            let content: String?    // indirme URL'i (VPN+auth gerektirir)
+        }
+        // Rendered (HTML) alanlar
+        struct RenderedFields: Decodable {
+            let description: String?
+            let comment: RenderedComment?
+            struct RenderedComment: Decodable { let comments: [RenderedBody]? }
+            struct RenderedBody: Decodable, Hashable { let id: String?; let body: String? }
+        }
+        // Değişiklik geçmişi
+        struct Changelog: Decodable {
+            let histories: [History]?
+            struct History: Decodable, Identifiable, Hashable {
+                let id: String
+                let author: JiraUser?
+                let created: String?
+                let items: [Item]?
+                struct Item: Decodable, Hashable {
+                    let field: String?
+                    let fromString: String?
+                    let toString: String?
+                }
+            }
         }
     }
     struct JiraTransition: Decodable, Identifiable, Hashable {
@@ -750,6 +832,24 @@ extension APIClient {
         let emailAddress: String?
         let accountId: String?
         var id: String { name ?? accountId ?? displayName ?? UUID().uuidString }
+    }
+
+    struct JiraPriority: Decodable, Hashable, Identifiable {
+        let id: String
+        let name: String
+    }
+
+    struct JiraVersion: Decodable, Hashable, Identifiable {
+        let id: String
+        let name: String
+        let released: Bool?
+        let archived: Bool?
+    }
+
+    struct JiraSprint: Decodable, Hashable, Identifiable {
+        let id: Int
+        let name: String
+        let state: String?  // active | future | closed
     }
 
     // ── Reads ─────────────────────────────────────────────────────────
@@ -792,6 +892,21 @@ extension APIClient {
         if let p = project { q["project"] = p }
         if let k = issueKey { q["issue_key"] = k }
         return try await get("api/jira/assignable", query: q)
+    }
+
+    /// Global priority şeması.
+    func listJiraPriorities() async throws -> [JiraPriority] {
+        try await get("api/jira/priorities")
+    }
+
+    /// Issue'nun projesindeki fix version'lar.
+    func listJiraVersions(issueKey: String) async throws -> [JiraVersion] {
+        try await get("api/jira/versions", query: ["issue_key": issueKey])
+    }
+
+    /// Issue'nun board'larındaki active+future sprint'ler.
+    func listJiraSprints(issueKey: String) async throws -> [JiraSprint] {
+        try await get("api/jira/sprints", query: ["issue_key": issueKey])
     }
 
     // ── Mutations ────────────────────────────────────────────────────
@@ -862,6 +977,25 @@ extension APIClient {
         )
     }
 
+    /// Fix versions — id listesi (tam liste, PUT field semantics; boş array = temizle)
+    func setJiraFixVersions(_ key: String, versionIds: [String], projectId: Int?) async throws {
+        let value = ActionEntry.JSONValue.array(
+            versionIds.map { .object(["id": .string($0)]) }
+        )
+        try await updateJiraTask(key, fields: ["fixVersions": value], projectId: projectId)
+    }
+
+    /// Sprint atama — sprintId nil ise issue backlog'a alınır (Agile API).
+    func setJiraSprint(_ key: String, sprintId: Int?, projectId: Int?) async throws {
+        struct Body: Encodable {
+            let sprint_id: Int?
+            let project_id: Int?
+        }
+        struct Empty: Decodable { let ok: Bool? }
+        let _: Empty = try await post("api/jira/task/\(key)/sprint",
+                                      body: Body(sprint_id: sprintId, project_id: projectId))
+    }
+
     func addJiraComment(_ key: String, body: String, projectId: Int?) async throws {
         struct Body: Encodable {
             let body: String
@@ -879,9 +1013,10 @@ extension APIClient {
         let workspace: String?
         let source_branch: String?
     }
-    func createBranchFromJira(_ key: String, sourceBranch: String = "develop", projectId: Int?) async throws -> BranchResult {
+    /// sourceBranch nil ise backend projenin git_default_branch'ini kullanır.
+    func createBranchFromJira(_ key: String, sourceBranch: String? = nil, projectId: Int?) async throws -> BranchResult {
         struct Body: Encodable {
-            let source_branch: String
+            let source_branch: String?
             let branch_prefix: String
             let project_id: Int?
         }
@@ -898,6 +1033,18 @@ extension APIClient {
         struct Body: Encodable { let project_id: Int? }
         struct Empty: Decodable {}
         let _: Empty = try await post("api/jira/refresh", body: Body(project_id: projectId))
+    }
+}
+
+// MARK: - İptal tespiti
+
+extension Error {
+    /// Task iptali veya URLSession cancel — gerçek bir hata değil, yutulmalı.
+    /// (Ör. `.task(id:)` yeniden tetiklenince önceki istek iptal edilir.)
+    var isCancellation: Bool {
+        if self is CancellationError { return true }
+        if let urlErr = self as? URLError, urlErr.code == .cancelled { return true }
+        return false
     }
 }
 
