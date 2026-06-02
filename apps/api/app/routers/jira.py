@@ -427,7 +427,9 @@ async def create_branch_from_task(key: str, body: CreateBranchBody) -> dict:
         issue = await get_jira().get_issue(key)
         summary = (issue.get("fields") or {}).get("summary") or ""
         slug = _slugify(summary)
-        branch_name = f"{body.branch_prefix}/{key}-{slug}".lower()
+        # Issue key BÜYÜK harf kalmalı — Jira Development panel branch'i ancak
+        # adında tam issue key'i (MOLENARS-1041) görürse issue'ya bağlar.
+        branch_name = f"{body.branch_prefix.lower()}/{key.upper()}-{slug}"
 
         # Workspace/repo/source: body verirse onu, yoksa aktif projenin ayarı
         ws = body.workspace
@@ -486,6 +488,47 @@ async def create_branch_from_task(key: str, body: CreateBranchBody) -> dict:
             "workspace": ws,
             "source_branch": src,
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+class DeleteBranchBody(BaseModel):
+    branch_name: str
+    repo: str | None = None
+    workspace: str | None = None
+    project_id: int | None = None
+
+
+@router.post("/branch/delete")
+async def delete_branch(body: DeleteBranchBody) -> dict:
+    try:
+        ws = body.workspace
+        repo = body.repo
+        if not ws or not repo:
+            pid = resolve_project_id(body.project_id)
+            with Session(engine) as session:
+                p = session.get(Project, pid)
+                ws = ws or (p.bitbucket_workspace if p else None)
+                repo = repo or (p.bitbucket_repo if p else None)
+
+        res = await get_bitbucket().delete_branch(
+            branch_name=body.branch_name, workspace=ws, repo=repo
+        )
+        ok = bool(res.get("ok"))
+        log_action(
+            action_type="branch.delete",
+            target_kind="branch",
+            target_id=body.branch_name,
+            payload={"repo": repo, "workspace": ws},
+            outcome="success" if ok else "failure",
+            error=res.get("error") if not ok else None,
+            project_id=body.project_id,
+        )
+        if not ok:
+            raise HTTPException(status_code=503, detail=res.get("error"))
+        return {"ok": True}
     except HTTPException:
         raise
     except Exception as e:

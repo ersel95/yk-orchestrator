@@ -14,6 +14,9 @@ struct JiraView: View {
     @State private var assigneeFilter: AssigneeOption = .mine
     @State private var categoryFilters: Set<CategoryOption> = []  // boş = hepsi
     @State private var textFilter: String = ""
+    @State private var labelFilter: String = ""
+    @State private var labelSuggestions: [String] = []
+    @State private var labelSearchTask: Task<Void, Never>?
     @State private var jqlOverride: String = ""
     @State private var advancedOpen: Bool = false
 
@@ -67,7 +70,20 @@ struct JiraView: View {
 
     private var filterKey: String {
         let cats = categoryFilters.map(\.rawValue).sorted().joined(separator: ",")
-        return "\(projectId ?? 0)-\(assigneeFilter.rawValue)-\(cats)-\(textFilter)-\(jqlOverride)"
+        return "\(projectId ?? 0)-\(assigneeFilter.rawValue)-\(cats)-\(textFilter)-\(labelFilter)-\(jqlOverride)"
+    }
+
+    private func scheduleLabelSearch() {
+        labelSearchTask?.cancel()
+        let q = labelFilter.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { labelSuggestions = []; return }
+        labelSearchTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+            if let res = try? await client.listJiraLabels(query: q), !Task.isCancelled {
+                labelSuggestions = res
+            }
+        }
     }
 
     private var categoryLabel: String {
@@ -113,6 +129,35 @@ struct JiraView: View {
                     Task { await refresh() }
                 } label: { Image(systemName: "arrow.clockwise") }
                     .disabled(loading)
+            }
+            // Etiket filtresi + autocomplete
+            HStack(spacing: 6) {
+                Image(systemName: "tag").font(.caption).foregroundStyle(.secondary)
+                TextField("Etikete göre filtrele", text: $labelFilter)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 200)
+                    .onChange(of: labelFilter) { _, _ in scheduleLabelSearch() }
+                    .onSubmit { Task { await refresh() } }
+                if !labelFilter.isEmpty {
+                    Button {
+                        labelFilter = ""; labelSuggestions = []
+                        Task { await refresh() }
+                    } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
+                ForEach(labelSuggestions.filter { $0 != labelFilter }.prefix(5), id: \.self) { s in
+                    Button {
+                        labelFilter = s; labelSuggestions = []
+                        Task { await refresh() }
+                    } label: {
+                        Text(s).font(.caption)
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.12))
+                            .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
             }
             DisclosureGroup("Gelişmiş JQL", isExpanded: $advancedOpen) {
                 HStack(spacing: 6) {
@@ -168,6 +213,7 @@ struct JiraView: View {
                 assignee: assigneeFilter.queryValue,
                 statusCategory: categoryFilters.isEmpty ? nil : categoryFilters.map(\.rawValue).joined(separator: ","),
                 text: textFilter.isEmpty ? nil : textFilter,
+                label: labelFilter.isEmpty ? nil : labelFilter,
                 maxResults: 200
             )
             // "Bana atanmış" görünümünde durum önceliğine göre sırala:

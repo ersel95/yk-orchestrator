@@ -1029,6 +1029,13 @@ extension APIClient {
                               body: Body(source_branch: sourceBranch, branch_prefix: "feature", project_id: projectId))
     }
 
+    func deleteBranch(_ branchName: String, projectId: Int?) async throws {
+        struct Body: Encodable { let branch_name: String; let project_id: Int? }
+        struct Empty: Decodable { let ok: Bool? }
+        let _: Empty = try await post("api/jira/branch/delete",
+                                      body: Body(branch_name: branchName, project_id: projectId))
+    }
+
     // ── Legacy (cached liste — eski cache mantığı) ────────────────────
 
     func jiraIssues(projectId: Int?) async throws -> [JiraCachedIssue] {

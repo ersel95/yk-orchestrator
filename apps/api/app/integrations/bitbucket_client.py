@@ -341,6 +341,29 @@ class BitbucketClient:
             }
         return {"ok": True, **r.json()}
 
+    async def delete_branch(
+        self,
+        *,
+        branch_name: str,
+        workspace: str | None = None,
+        repo: str | None = None,
+    ) -> dict[str, Any]:
+        """Branch siler (Bitbucket Server branch-utils).
+
+        Endpoint: DELETE /rest/branch-utils/1.0/projects/{KEY}/repos/{slug}/branches
+        Body: {"name": "refs/heads/feature/X", "dryRun": false}
+        """
+        ws = self._ws(workspace)
+        repo = repo or self.default_repo
+        if not repo:
+            return {"ok": False, "error": "repo belirtilmedi"}
+        ref = branch_name if branch_name.startswith("refs/heads/") else f"refs/heads/{branch_name}"
+        url = f"/rest/branch-utils/1.0/projects/{ws}/repos/{repo}/branches"
+        r = await self._client.request("DELETE", url, json={"name": ref, "dryRun": False})
+        if r.status_code >= 400:
+            return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+        return {"ok": True}
+
     async def get_branches(
         self,
         *,

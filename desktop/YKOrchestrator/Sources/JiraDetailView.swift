@@ -50,6 +50,7 @@ struct JiraDetailView: View {
     @State private var actionMessage: String?
     @State private var showAgentSheet: Bool = false
     @State private var issueBranches: [APIClient.BBBranch] = []  // bu issue için mevcut branch'ler
+    @State private var branchToDelete: String?
 
     var body: some View {
         Group {
@@ -67,6 +68,16 @@ struct JiraDetailView: View {
             }
         }
         .task(id: task.id) { sprintLabel = task.sprint; await load() }
+        .confirmationDialog(
+            "Branch silinsin mi?",
+            isPresented: Binding(get: { branchToDelete != nil }, set: { if !$0 { branchToDelete = nil } }),
+            presenting: branchToDelete
+        ) { name in
+            Button("Sil", role: .destructive) { Task { await deleteBranch(name) } }
+            Button("Vazgeç", role: .cancel) {}
+        } message: { name in
+            Text("\(name) Bitbucket'tan kalıcı olarak silinecek.")
+        }
         .navigationTitle("\(task.issue_key) — \(task.summary)")
         .sheet(isPresented: $showAgentSheet) {
             AgentSheet(
@@ -197,6 +208,15 @@ struct JiraDetailView: View {
                         }
                     }
                     Spacer()
+                    Button {
+                        branchToDelete = b.displayId
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.red)
+                    .help("Branch'i sil")
+                    .disabled(actionInFlight)
                 }
                 .padding(.horizontal, 8).padding(.vertical, 5)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -847,6 +867,19 @@ struct JiraDetailView: View {
         } catch {
             if error.isCancellation { return }
             actionMessage = "⚠️ Branch oluşturulamadı: \(error.localizedDescription)"
+        }
+    }
+
+    private func deleteBranch(_ name: String) async {
+        actionInFlight = true; actionMessage = "Branch siliniyor…"
+        defer { actionInFlight = false }
+        do {
+            try await client.deleteBranch(name, projectId: projectId)
+            actionMessage = "🗑️ Branch silindi: \(name)"
+            issueBranches.removeAll { $0.displayId == name }
+        } catch {
+            if error.isCancellation { return }
+            actionMessage = "⚠️ Branch silinemedi: \(error.localizedDescription)"
         }
     }
 
