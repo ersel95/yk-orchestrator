@@ -33,10 +33,17 @@ struct HTMLText: View {
             return nil
         }
         // HTML kendi (küçük) fontunu getirir — uygulama fontuyla normalize et,
-        // rengi sistem label rengine çek (dark mode uyumu).
+        // rengi sistem label rengine çek (dark mode uyumu), satır aralığı ekle (okunabilirlik).
         let full = NSRange(location: 0, length: ns.length)
         ns.addAttribute(.font, value: font, range: full)
         ns.addAttribute(.foregroundColor, value: NSColor.labelColor, range: full)
+        ns.enumerateAttribute(.paragraphStyle, in: full) { value, range, _ in
+            let para = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
+                ?? NSMutableParagraphStyle()
+            para.lineSpacing = 3
+            para.paragraphSpacing = 7
+            ns.addAttribute(.paragraphStyle, value: para, range: range)
+        }
         return try? AttributedString(ns, including: \.appKit)
     }
 

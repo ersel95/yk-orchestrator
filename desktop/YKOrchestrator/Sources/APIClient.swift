@@ -909,6 +909,11 @@ extension APIClient {
         try await get("api/jira/sprints", query: ["issue_key": issueKey])
     }
 
+    /// Mevcut etiketler arasında autocomplete önerileri.
+    func listJiraLabels(query: String) async throws -> [String] {
+        try await get("api/jira/labels", query: ["q": query])
+    }
+
     // ── Mutations ────────────────────────────────────────────────────
 
     struct JiraTransitionResult: Decodable {

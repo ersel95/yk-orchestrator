@@ -10,7 +10,7 @@ struct JiraDetailView: View {
     @State private var detail: APIClient.JiraIssueDetail?
     @State private var transitions: [APIClient.JiraTransition] = []
     @State private var assignableUsers: [APIClient.JiraUserDetail] = []
-    @State private var loading: Bool = false
+    @State private var loading: Bool = true   // ilk render dolu olsun ki .task tetiklensin (boş Group zero-size = .task ölür)
     @State private var error: String?
 
     // Inline edit state
@@ -22,8 +22,11 @@ struct JiraDetailView: View {
     @State private var assigneeQuery: String = ""
     @State private var assigneeSearchTask: Task<Void, Never>?
 
-    @State private var labelsDraft: String = ""
     @State private var labelsEditing: Bool = false
+    @State private var labelsList: [String] = []
+    @State private var labelInput: String = ""
+    @State private var labelSuggestions: [String] = []
+    @State private var labelSearchTask: Task<Void, Never>?
 
     // Priority / sprint / fix versions seçenekleri (lazy yüklenir)
     @State private var priorities: [APIClient.JiraPriority] = []
@@ -35,42 +38,33 @@ struct JiraDetailView: View {
 
     @State private var commentDraft: String = ""
     @State private var commentInflight: Bool = false
+    @State private var activityTab: ActivityTab = .all
+
+    enum ActivityTab: String, CaseIterable, Hashable {
+        case all = "Tümü"
+        case comments = "Yorumlar"
+        case history = "Geçmiş"
+    }
 
     @State private var actionInFlight: Bool = false
     @State private var actionMessage: String?
     @State private var showAgentSheet: Bool = false
+    @State private var issueBranches: [APIClient.BBBranch] = []  // bu issue için mevcut branch'ler
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if loading && detail == nil {
-                    ProgressView("Detay yükleniyor...").padding()
-                } else if let err = error {
+        Group {
+            if loading && detail == nil {
+                ProgressView("Detay yükleniyor...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let err = error {
+                VStack(spacing: 12) {
                     EmptyState("Erişilemiyor", systemImage: "wifi.exclamationmark", description: err)
                     Button("Tekrar dene") { Task { await load() } }
-                } else if let d = detail, let f = d.fields {
-                    headerSection(d, f)
-                    if let msg = actionMessage {
-                        Label(msg, systemImage: "info.circle")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .padding(.vertical, 2)
-                    }
-                    Divider()
-                    statusBar(f)
-                    summarySection(f)
-                    descriptionSection(f, d.renderedFields)
-                    sidebarFields(f)
-                    attachmentsSection(f)
-                    Divider()
-                    commentsSection(f, d.renderedFields)
-                    commentComposer
-                    Divider()
-                    historySection(d.changelog)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let d = detail, let f = d.fields {
+                scrollBody(d, f)
             }
-            .frame(maxWidth: 760, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
         }
         .task(id: task.id) { sprintLabel = task.sprint; await load() }
         .navigationTitle("\(task.issue_key) — \(task.summary)")
@@ -82,6 +76,63 @@ struct JiraDetailView: View {
                 projectId: projectId,
                 isPresented: $showAgentSheet
             )
+        }
+    }
+
+    private func scrollBody(_ d: APIClient.JiraIssueDetail, _ f: APIClient.JiraIssueDetail.JiraFields) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                headerSection(d, f).surfaceCard()
+
+                if let msg = actionMessage {
+                    Label(msg, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .innerPanel(padding: 10)
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    summarySection(f)
+                    Divider()
+                    descriptionSection(f, d.renderedFields)
+                }
+                .surfaceCard()
+
+                VStack(alignment: .leading, spacing: 14) {
+                    statusBar(f)
+                    Divider()
+                    sidebarFields(f)
+                }
+                .surfaceCard()
+
+                attachmentsSection(f)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Etkinlik").font(.callout.weight(.semibold))
+                        Spacer()
+                        Picker("", selection: $activityTab) {
+                            ForEach(ActivityTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 260)
+                        .labelsHidden()
+                    }
+                    if activityTab != .history {
+                        commentsSection(f, d.renderedFields)
+                    }
+                    if activityTab != .comments {
+                        if activityTab == .all { Divider() }
+                        historySection(d.changelog)
+                    }
+                    Divider()
+                    commentComposer
+                }
+                .surfaceCard()
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
     }
 
@@ -106,11 +157,13 @@ struct JiraDetailView: View {
                     .font(.caption)
             }
             HStack(spacing: 14) {
-                Button {
-                    Task { await createBranch() }
-                } label: { Label("Branch oluştur", systemImage: "arrow.triangle.branch") }
-                    .buttonStyle(.bordered)
-                    .disabled(actionInFlight)
+                if issueBranches.isEmpty {
+                    Button {
+                        Task { await createBranch() }
+                    } label: { Label("Branch oluştur", systemImage: "arrow.triangle.branch") }
+                        .buttonStyle(.bordered)
+                        .disabled(actionInFlight)
+                }
 
                 Button {
                     showAgentSheet = true
@@ -119,6 +172,41 @@ struct JiraDetailView: View {
                     .tint(.purple)
                     .disabled(actionInFlight)
             }
+
+            if !issueBranches.isEmpty {
+                branchInfoView
+            }
+        }
+    }
+
+    /// Bu issue için açılmış branch'ler + ahead/behind durumu.
+    private var branchInfoView: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(issueBranches) { b in
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.branch").foregroundStyle(.green)
+                    Text(b.displayId).font(.caption.monospaced())
+                    if let ab = b.metadata?.aheadBehind {
+                        let ahead = ab.ahead ?? 0
+                        let behind = ab.behind ?? 0
+                        if ahead > 0 { Text("↑\(ahead)").font(.caption2.monospaced()).foregroundStyle(.green) }
+                        if behind > 0 { Text("↓\(behind)").font(.caption2.monospaced()).foregroundStyle(.orange) }
+                        if ahead == 0 && behind == 0 {
+                            Label("güncel", systemImage: "checkmark.seal")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.green.opacity(0.10))
+                .cornerRadius(6)
+            }
+            Button {
+                Task { await createBranch() }
+            } label: { Label("Yeni branch oluştur", systemImage: "plus") }
+                .buttonStyle(.borderless).font(.caption).disabled(actionInFlight)
         }
     }
 
@@ -269,8 +357,8 @@ struct JiraDetailView: View {
                 }
             }
 
-            // Labels
-            VStack(alignment: .leading, spacing: 4) {
+            // Labels — tag (chip) + autocomplete
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Etiketler").font(.caption).foregroundStyle(.secondary)
                     Spacer()
@@ -280,24 +368,34 @@ struct JiraDetailView: View {
                         Button("İptal") { labelsEditing = false }
                     } else {
                         Button {
-                            labelsDraft = (f.labels ?? []).joined(separator: ", ")
+                            labelsList = f.labels ?? []
+                            labelInput = ""; labelSuggestions = []
                             labelsEditing = true
                         } label: { Image(systemName: "pencil") }
                             .buttonStyle(.borderless)
                     }
                 }
                 if labelsEditing {
-                    TextField("virgüllü etiketler", text: $labelsDraft)
-                        .textFieldStyle(.roundedBorder)
-                } else if let ls = f.labels, !ls.isEmpty {
-                    HStack {
-                        ForEach(ls, id: \.self) { l in
-                            Text(l).font(.caption)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.15))
-                                .cornerRadius(3)
-                        }
+                    if !labelsList.isEmpty {
+                        labelChips(labelsList, removable: true)
                     }
+                    TextField("Etiket ara/ekle…", text: $labelInput)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: labelInput) { _, _ in scheduleLabelSearch() }
+                        .onSubmit { addLabel(labelInput) }
+                    ForEach(labelSuggestions.filter { !labelsList.contains($0) }.prefix(6), id: \.self) { s in
+                        Button { addLabel(s) } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "tag").font(.caption).foregroundStyle(.tint)
+                                Text(s).font(.callout)
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 2)
+                    }
+                } else if let ls = f.labels, !ls.isEmpty {
+                    labelChips(ls, removable: false)
                 } else {
                     Text("(yok)").font(.callout).foregroundStyle(.secondary)
                 }
@@ -519,6 +617,7 @@ struct JiraDetailView: View {
                     .cornerRadius(6)
                 }
             }
+            .surfaceCard()
         }
     }
 
@@ -594,6 +693,9 @@ struct JiraDetailView: View {
             if error.isCancellation { return }  // yeni yükleme başladı; iptali yut
             self.error = vpnAwareMessage(error)
         }
+        loading = false
+        // Branch (Bitbucket) opsiyonel + detay render'ını BLOKE ETMEZ — ayrı, hata yutulur
+        issueBranches = (try? await client.bbBranches(projectId: projectId, filter: task.issue_key)) ?? []
     }
 
     private func vpnAwareMessage(_ error: Error) -> String {
@@ -634,15 +736,58 @@ struct JiraDetailView: View {
         } catch { actionMessage = "Hata: \(error.localizedDescription)" }
     }
 
+    @ViewBuilder
+    private func labelChips(_ labels: [String], removable: Bool) -> some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 64, maximum: 220), spacing: 6, alignment: .leading)],
+            alignment: .leading, spacing: 6
+        ) {
+            ForEach(labels, id: \.self) { l in
+                HStack(spacing: 4) {
+                    Text(l).font(.caption)
+                    if removable {
+                        Button { labelsList.removeAll { $0 == l } } label: {
+                            Image(systemName: "xmark.circle.fill").font(.caption2)
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(removable ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.15))
+                .cornerRadius(10)
+            }
+        }
+    }
+
+    private func scheduleLabelSearch() {
+        labelSearchTask?.cancel()
+        let q = labelInput.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { labelSuggestions = []; return }
+        labelSearchTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+            do {
+                let res = try await client.listJiraLabels(query: q)
+                if !Task.isCancelled { labelSuggestions = res }
+            } catch { if !error.isCancellation { /* sessiz */ } }
+        }
+    }
+
+    private func addLabel(_ raw: String) {
+        let l = raw.trimmingCharacters(in: .whitespaces)
+        guard !l.isEmpty, !labelsList.contains(l) else { labelInput = ""; return }
+        labelsList.append(l)
+        labelInput = ""
+        labelSuggestions = []
+    }
+
     private func saveLabels() async {
         actionInFlight = true; actionMessage = nil
         defer { actionInFlight = false }
-        let labels = labelsDraft
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        // Input'ta yazılı kalan etiketi de dahil et
+        addLabel(labelInput)
         do {
-            try await client.setJiraLabels(task.issue_key, labels: labels, projectId: projectId)
+            try await client.setJiraLabels(task.issue_key, labels: labelsList, projectId: projectId)
             labelsEditing = false
             await load()
         } catch { actionMessage = "Hata: \(error.localizedDescription)" }

@@ -38,25 +38,29 @@ struct JiraView: View {
     var body: some View {
         // Dış MainView zaten NavigationSplitView — burada İKİNCİ bir split iç içe
         // girince ortada hayalet boş bir kolon oluşuyor. İki kolonlu HStack kullanıyoruz.
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                filterBar
-                Divider()
-                content
-            }
-            .frame(width: 460)
-            Divider()
-            Group {
-                if let t = selectedTask {
-                    JiraDetailView(client: client, task: t, projectId: projectId,
-                                   onChanged: { Task { await refresh() } })
-                        .id(t.id)
-                } else {
-                    EmptyState("Seç", systemImage: "arrow.left",
-                               description: "Soldan bir task seç")
+        GeometryReader { geo in
+            let listW = min(CGFloat(420), max(CGFloat(320), geo.size.width * 0.40))
+            let detailW = max(CGFloat(0), geo.size.width - listW - 1)
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    filterBar
+                    Divider()
+                    content
                 }
+                .frame(width: listW, height: geo.size.height)
+                Divider()
+                Group {
+                    if let t = selectedTask {
+                        JiraDetailView(client: client, task: t, projectId: projectId,
+                                       onChanged: { Task { await refresh() } })
+                            .id(t.id)
+                    } else {
+                        EmptyState("Seç", systemImage: "arrow.left",
+                                   description: "Soldan bir task seç")
+                    }
+                }
+                .frame(width: detailW, height: geo.size.height)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: filterKey) { await refresh() }
     }
@@ -142,10 +146,14 @@ struct JiraView: View {
             EmptyState("Boş", systemImage: "checklist", description: "Bu filtreye uyan task yok.")
         } else {
             List(tasks, id: \.issue_key, selection: $selectedTask) { task in
-                JiraTaskRow(task: task)
+                JiraTaskRow(task: task, isSelected: selectedTask?.issue_key == task.issue_key)
                     .tag(task)
+                    .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
-            .listStyle(.inset)
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
     }
 
@@ -205,38 +213,55 @@ struct JiraView: View {
 
 private struct JiraTaskRow: View {
     let task: APIClient.JiraTask
+    var isSelected: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(task.issue_key)
-                    .font(.caption.monospaced())
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(typeColor.opacity(0.18))
-                    .foregroundStyle(typeColor)
-                    .cornerRadius(3)
-                Text(task.summary).font(.body.weight(.medium)).lineLimit(2)
-                Spacer()
-                statusBadge
+        HStack(spacing: 0) {
+            Rectangle().fill(typeColor).frame(width: 3)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text(task.issue_key)
+                        .font(.caption.monospaced())
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(typeColor.opacity(0.18))
+                        .foregroundStyle(typeColor)
+                        .cornerRadius(3)
+                    Text(task.summary).font(.body.weight(.medium)).lineLimit(2)
+                    Spacer()
+                    statusBadge
+                }
+                HStack(spacing: 10) {
+                    if let a = task.assignee {
+                        Label(a, systemImage: "person").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Label("Atanmamış", systemImage: "person.crop.circle.badge.questionmark")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    if let p = task.priority {
+                        Label(p, systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let s = task.sprint {
+                        Label(s, systemImage: "calendar").font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
             }
-            HStack(spacing: 10) {
-                if let a = task.assignee {
-                    Label(a, systemImage: "person").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Label("Atanmamış", systemImage: "person.crop.circle.badge.questionmark")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                if let p = task.priority {
-                    Label(p, systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if let s = task.sprint {
-                    Label(s, systemImage: "calendar").font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
+            .padding(.vertical, 8)
+            .padding(.leading, 9)
+            .padding(.trailing, 10)
         }
-        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(isSelected ? 0.08 : 0.035), radius: isSelected ? 5 : 3, x: 0, y: 1)
     }
 
     private var typeColor: Color {
