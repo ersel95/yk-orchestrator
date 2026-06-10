@@ -21,6 +21,13 @@ struct AgentSheet: View {
 
     @State private var plan: String = ""
     @State private var planCost: Double?
+    @State private var planLines: [ConsoleLine] = []
+    @State private var planStreaming = false
+    @State private var planDone = false
+
+    @State private var codeLines: [ConsoleLine] = []
+    @State private var codeStreaming = false
+    @State private var codeFinished = false
 
     @State private var branchName: String = ""
     @State private var sourceBranch: String = "develop"
@@ -116,17 +123,23 @@ struct AgentSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Plan").font(.title3.weight(.semibold))
             Text("\(jiraKey) — \(jiraSummary)").font(.callout).foregroundStyle(.secondary)
-            if plan.isEmpty && !loading {
-                Text("Claude task'ı analiz edip ne yapacağını planlamalı. 'Plan Üret' butonuna bas.")
+            if planLines.isEmpty && !planStreaming {
+                Text("Claude task'ı analiz edip planını çıkaracak. 'Plan Üret' butonuna bas.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            if loading {
-                HStack { ProgressView().controlSize(.small); Text("Plan üretiliyor...") }
+            // Akış sırasında canlı konsol
+            if planStreaming || (!planDone && !planLines.isEmpty) {
+                AgentConsoleView(lines: planLines, running: planStreaming)
+                    .frame(height: 340)
             }
-            if !plan.isEmpty {
-                Text(plan).font(.body).textSelection(.enabled)
-                    .padding(12).background(Color.secondary.opacity(0.06)).cornerRadius(8)
-                if let c = planCost { Text(String(format: "Maliyet: $%.4f", c)).font(.caption).foregroundStyle(.secondary) }
+            // Akış bitince düzenlenebilir plan
+            if planDone {
+                Text("Planı düzenleyebilirsin, sonra 'Bu planla geliştir':")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $plan)
+                    .font(.callout)
+                    .frame(minHeight: 260)
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
             }
             errorLine
         }
@@ -157,13 +170,13 @@ struct AgentSheet: View {
     private var codeContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Kod Üret").font(.title3.weight(.semibold))
-            Text("Claude planı uygulayıp lokal repo'da değişiklik yapacak. Süre 1-5 dk arası.")
+            Text("Claude planı uygular; her dosya değişikliği ve komut aşağıda canlı görünür.")
                 .font(.callout).foregroundStyle(.secondary)
-            if loading { HStack { ProgressView().controlSize(.small); Text("Kod yazılıyor...") } }
-            if !codeReport.isEmpty {
-                Text(codeReport).font(.callout).textSelection(.enabled)
-                    .padding(12).background(Color.green.opacity(0.06)).cornerRadius(8)
-                if let c = codeCost { Text(String(format: "Maliyet: $%.4f", c)).font(.caption).foregroundStyle(.secondary) }
+            if codeLines.isEmpty && !codeStreaming {
+                Text("'Kod Üret' ile başla.").font(.callout).foregroundStyle(.secondary)
+            } else {
+                AgentConsoleView(lines: codeLines, running: codeStreaming)
+                    .frame(minHeight: 380)
             }
             errorLine
         }
@@ -228,21 +241,33 @@ struct AgentSheet: View {
             Spacer()
             switch step {
             case .plan:
-                Button(plan.isEmpty ? "Plan Üret" : "Devam Et") {
-                    Task { plan.isEmpty ? await runPlan() : advance() }
+                if !planDone {
+                    Button(planStreaming ? "Üretiliyor…" : "Plan Üret") {
+                        Task { await runPlanStream() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(planStreaming)
+                } else {
+                    Button("Bu planla geliştir") { advance() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(loading)
             case .prepare:
                 Button("Branch Hazırla") { Task { await runPrepare() } }
                     .buttonStyle(.borderedProminent)
                     .disabled(loading || branchName.isEmpty)
             case .code:
-                Button(codeReport.isEmpty ? "Kod Üret" : "Devam Et") {
-                    Task { codeReport.isEmpty ? await runCode() : await loadDiff() }
+                if !codeFinished {
+                    Button(codeStreaming ? "Yazılıyor…" : "Kod Üret") {
+                        Task { await runCodeStream() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(codeStreaming)
+                } else {
+                    Button("Diff'i gör") { Task { await loadDiff() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(loading)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(loading)
             case .commit:
                 Button("Commit + Push") { Task { await runCommit() } }
                     .buttonStyle(.borderedProminent)
@@ -263,13 +288,72 @@ struct AgentSheet: View {
 
     // MARK: - Actions
 
-    private func runPlan() async {
-        loading = true; error = nil
-        defer { loading = false }
+    /// Stream event'lerini konsol satırlarına uygular; text'leri ayrıca biriktirir.
+    private func apply(_ ev: APIClient.AgentEvent, to lines: inout [ConsoleLine], plainText: inout String) {
+        switch ev {
+        case .meta(let repo, _):
+            if !repo.isEmpty { lines.append(ConsoleLine(kind: .info, text: "repo: \(repo)")) }
+            repoPath = repo
+        case .text(let t):
+            plainText += t
+            if case .text = lines.last?.kind { lines[lines.count - 1].text += t }
+            else { lines.append(ConsoleLine(kind: .text, text: t)) }
+        case .thinking(let t):
+            if case .thinking = lines.last?.kind { lines[lines.count - 1].text += t }
+            else { lines.append(ConsoleLine(kind: .thinking, text: t)) }
+        case .tool(let name, let summary):
+            lines.append(ConsoleLine(kind: .tool(name: name), text: summary))
+        case .toolResult(let isError):
+            lines.append(ConsoleLine(kind: .toolResult(isError: isError), text: ""))
+        case .done(let cost, let dur, _, let result):
+            // Akış sırasında text gelmediyse final result'ı metin olarak kullan
+            if plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !result.isEmpty {
+                plainText = result
+                lines.append(ConsoleLine(kind: .text, text: result))
+            }
+            var s = "✓ tamamlandı"
+            if let cost { s += String(format: " · $%.4f", cost) }
+            if let dur { s += " · \(dur / 1000)s" }
+            lines.append(ConsoleLine(kind: .info, text: s))
+        case .error(let msg):
+            lines.append(ConsoleLine(kind: .error, text: msg))
+        }
+    }
+
+    private func runPlanStream() async {
+        planLines = []; plan = ""; planStreaming = true; planDone = false; error = nil
+        var text = ""
+        ykLog("runPlanStream START key=\(jiraKey)")
         do {
-            let r = try await client.agentPlan(jiraKey: jiraKey, projectId: projectId)
-            plan = r.plan; planCost = r.cost_usd; repoPath = r.repo ?? ""
-        } catch { self.error = error.localizedDescription }
+            var n = 0
+            for try await ev in client.agentPlanStream(jiraKey: jiraKey, projectId: projectId) {
+                n += 1
+                apply(ev, to: &planLines, plainText: &text)
+            }
+            ykLog("runPlanStream END events=\(n) textLen=\(text.count) lines=\(planLines.count)")
+            plan = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            planDone = true
+        } catch {
+            ykLog("runPlanStream CATCH \(error)")
+            self.error = error.localizedDescription
+            planLines.append(ConsoleLine(kind: .error, text: error.localizedDescription))
+        }
+        planStreaming = false
+    }
+
+    private func runCodeStream() async {
+        codeLines = []; codeStreaming = true; codeFinished = false; error = nil
+        var text = ""
+        do {
+            for try await ev in client.agentCodeStream(jiraKey: jiraKey, plan: plan, projectId: projectId) {
+                apply(ev, to: &codeLines, plainText: &text)
+            }
+            codeFinished = true
+        } catch {
+            self.error = error.localizedDescription
+            codeLines.append(ConsoleLine(kind: .error, text: error.localizedDescription))
+        }
+        codeStreaming = false
     }
 
     private func runPrepare() async {

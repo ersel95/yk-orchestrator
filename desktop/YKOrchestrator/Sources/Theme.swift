@@ -1,4 +1,15 @@
 import SwiftUI
+import Foundation
+
+func ykLog(_ s: String) {
+    let line = "\(Date().timeIntervalSince1970) \(s)\n"
+    let path = "/tmp/yk-debug.log"
+    if let data = line.data(using: .utf8) {
+        if let fh = FileHandle(forWritingAtPath: path) {
+            fh.seekToEndOfFile(); fh.write(data); try? fh.close()
+        } else { try? data.write(to: URL(fileURLWithPath: path)) }
+    }
+}
 
 /// Uygulama genelinde tutarlı görsel dil — ince gölge, yumuşak yüzeyler, radius.
 /// Bankacılık aracı: sade ama okunur; abartılı renk yok.

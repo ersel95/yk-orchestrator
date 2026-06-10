@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import shutil
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from sqlmodel import Session
@@ -67,6 +68,210 @@ async def _run_claude(
         return json.loads(stdout_b.decode("utf-8"))
     except json.JSONDecodeError:
         return {"is_error": True, "result": stdout_b.decode("utf-8", errors="replace")[:1000]}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Streaming (stream-json) — canlı konsol için
+# ─────────────────────────────────────────────────────────────────────────
+
+def _tool_summary(name: str | None, inp: dict | None) -> str:
+    """Tool input'undan kısa, okunur özet (dosya adı / komut / pattern)."""
+    inp = inp or {}
+    n = name or ""
+    if n in ("Edit", "Write", "Read", "NotebookEdit", "MultiEdit"):
+        fp = inp.get("file_path") or inp.get("path") or inp.get("notebook_path") or ""
+        return os.path.basename(fp) or fp
+    if n == "Bash":
+        return (inp.get("command") or "")[:100]
+    if n in ("Grep", "Glob"):
+        return inp.get("pattern") or inp.get("query") or inp.get("glob") or ""
+    if n == "Task":
+        return (inp.get("description") or "")[:80]
+    return ""
+
+
+def _parse_stream_event(ev: dict) -> list[dict]:
+    """stream-json satır event'ini frontend için tipli olaylara çevirir.
+
+    Üretilen tipler: text, thinking, tool, tool_result, done.
+    Not: tool_use'lar `assistant` mesajından (input dolu) okunur; partial
+    `content_block_start` (input boş) atlanır — çift satır olmasın.
+    """
+    t = ev.get("type")
+    if t == "stream_event":
+        inner = ev.get("event", {})
+        if inner.get("type") == "content_block_delta":
+            d = inner.get("delta", {})
+            if d.get("type") == "text_delta" and d.get("text"):
+                return [{"type": "text", "data": d["text"]}]
+            if d.get("type") == "thinking_delta" and d.get("thinking"):
+                return [{"type": "thinking", "data": d["thinking"]}]
+        return []
+    if t == "assistant":
+        outs: list[dict] = []
+        for block in (ev.get("message", {}).get("content") or []):
+            if block.get("type") == "tool_use":
+                name = block.get("name", "tool")
+                outs.append({"type": "tool", "data": {
+                    "name": name, "summary": _tool_summary(name, block.get("input")),
+                }})
+        return outs
+    if t == "user":
+        for block in (ev.get("message", {}).get("content") or []):
+            if block.get("type") == "tool_result":
+                return [{"type": "tool_result", "data": {"is_error": bool(block.get("is_error"))}}]
+        return []
+    if t == "result":
+        return [{"type": "done", "data": {
+            "cost_usd": ev.get("total_cost_usd"),
+            "duration_ms": ev.get("duration_ms"),
+            "is_error": bool(ev.get("is_error")),
+            "result": ev.get("result") or "",  # final metin (plan/özet) — garantili
+        }}]
+    return []
+
+
+async def _run_claude_stream(
+    prompt: str,
+    *,
+    cwd: str,
+    system_prompt: str = "",
+    model: str = "claude-opus-4-7",
+    timeout: int = 1800,
+) -> AsyncIterator[dict]:
+    """claude CLI'yi stream-json ile çalıştırır; tipli olayları (text/tool/done) yield eder."""
+    args = [
+        _claude_bin(), "-p", "--model", model,
+        "--output-format", "stream-json",
+        "--include-partial-messages", "--verbose",
+    ]
+    if system_prompt:
+        args.extend(["--system-prompt", system_prompt])
+
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd or None,
+    )
+    assert proc.stdin and proc.stdout
+    proc.stdin.write(prompt.encode("utf-8"))
+    proc.stdin.close()
+
+    try:
+        async for raw in proc.stdout:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for out in _parse_stream_event(ev):
+                yield out
+    finally:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=10)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+async def make_plan_stream(*, jira_key: str, project_id: int | None) -> AsyncIterator[dict]:
+    """make_plan'in streaming versiyonu — plan metni + repo inceleme olayları canlı."""
+    pid = resolve_project_id(project_id)
+    with Session(engine) as session:
+        proj = session.get(Project, pid)
+        if not proj or not proj.local_repo_path:
+            raise RuntimeError("Aktif projenin local_repo_path'i ayarlı değil (Ayarlar)")
+        repo_path = proj.local_repo_path
+    if not Path(repo_path).is_dir():
+        raise RuntimeError(f"Lokal repo bulunamadı: {repo_path}")
+
+    try:
+        issue = await get_jira().get_issue(jira_key)
+    except Exception as e:
+        raise RuntimeError(f"Jira'ya erişilemiyor (VPN?): {e}")
+    fields = issue.get("fields") or {}
+    summary = fields.get("summary") or ""
+    description = (fields.get("description") or "")[:5000]
+    status = (fields.get("status") or {}).get("name") or "?"
+    issue_type = (fields.get("issuetype") or {}).get("name") or "?"
+
+    system = (
+        "Sen Yapı Kredi iOS ekibinde senior iOS developer'sın. Banka kodu üstünde "
+        "çalışıyorsun — değişikliklerin güvenli, geri-alınabilir ve test edilebilir "
+        "olmalı. Şu an SADECE PLAN ÇIKAR, kod yazma. "
+        "Cevabını ŞU FORMATTA Türkçe ver:\n\n"
+        "## Plan\n(yapılacakların maddeli listesi)\n\n"
+        "## Etkilenecek dosyalar\n(- file/path/X.swift — neden)\n\n"
+        "## Riskler / sorular\n(varsa)\n"
+    )
+    prompt = (
+        f"Jira task: **{jira_key}** — {summary}\n"
+        f"Tip: {issue_type}, Durum: {status}\n\n"
+        f"Açıklama:\n{description or '(yok)'}\n\n"
+        "Bu task için lokal repo'yu inceleyip yapılacak değişikliklerin planını çıkar."
+    )
+
+    yield {"type": "meta", "data": {"repo": repo_path, "jira_summary": summary}}
+    parts: list[str] = []
+    async for ev in _run_claude_stream(prompt, cwd=repo_path, system_prompt=system, timeout=900):
+        if ev["type"] == "text":
+            parts.append(ev["data"])
+        yield ev
+
+    log_action(
+        action_type="agent.plan", actor="ai", target_kind="jira_issue", target_id=jira_key,
+        payload={"summary": summary[:120], "preview": "".join(parts)[:200]},
+        project_id=project_id,
+    )
+
+
+async def generate_code_stream(
+    *, jira_key: str, plan: str, project_id: int | None
+) -> AsyncIterator[dict]:
+    """generate_code'un streaming versiyonu — dosya edit/komut olayları canlı."""
+    pid = resolve_project_id(project_id)
+    with Session(engine) as session:
+        proj = session.get(Project, pid)
+        if not proj or not proj.local_repo_path:
+            raise RuntimeError("Lokal repo yolu yok")
+        repo_path = proj.local_repo_path
+
+    try:
+        issue = await get_jira().get_issue(jira_key)
+    except Exception as e:
+        raise RuntimeError(f"Jira: {e}")
+    summary = (issue.get("fields") or {}).get("summary") or ""
+
+    system = (
+        "Sen Yapı Kredi iOS ekibinde senior iOS developer'sın. Banka kodu üstünde "
+        "çalışıyorsun. Az önce onaylanmış bir plana göre değişiklikleri yapacaksın. "
+        "Dosyaları düzenle (Edit/Write tool'larıyla), build edilebilir bırak. Türkçe rapor ver."
+    )
+    prompt = (
+        f"Jira task: **{jira_key}** — {summary}\n\n"
+        f"Onaylanmış plan:\n{plan}\n\n"
+        "Bu planı uygulayarak repo'da gerekli dosya değişikliklerini yap. "
+        "İşin sonunda kısa bir Türkçe değişiklik özeti ver."
+    )
+
+    yield {"type": "meta", "data": {"repo": repo_path, "jira_summary": summary}}
+    parts: list[str] = []
+    async for ev in _run_claude_stream(prompt, cwd=repo_path, system_prompt=system, timeout=1800):
+        if ev["type"] == "text":
+            parts.append(ev["data"])
+        yield ev
+
+    log_action(
+        action_type="agent.code_gen", actor="ai", target_kind="jira_issue", target_id=jira_key,
+        payload={"preview": "".join(parts)[:200]},
+        project_id=project_id,
+    )
 
 
 async def _git(cwd: str, *args: str) -> tuple[int, str, str]:

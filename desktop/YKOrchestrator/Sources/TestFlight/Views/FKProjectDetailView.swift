@@ -21,8 +21,14 @@ struct FKProjectDetailView: View {
     @State private var isLoading = true
 
     @State private var marketingVersion: String = ""
+    /// Shared build number, used when `buildNumberShared` is on.
     @State private var buildNumber: String = ""
+    /// Per-environment build numbers (env adı → değer), "ayrı" modda kullanılır.
+    @State private var perEnvBuildNumbers: [String: String] = [:]
     @State private var showCredentialsSheet = false
+
+    @AppStorage(AppSettings.buildNumberManagedKey) private var buildNumberManaged = true
+    @AppStorage(AppSettings.buildNumberSharedKey) private var buildNumberShared = true
     @State private var pipelineBatch: PipelineBatch?
     /// The environments the user has ticked, by name. Any subset is allowed
     /// (e.g. Test + Prod, or Test + UAT). Persisted per project across launches.
@@ -76,11 +82,15 @@ struct FKProjectDetailView: View {
             // Version, TestFlight build and live state all differ per bundle id.
             marketingVersion = ""
             buildNumber = ""
+            perEnvBuildNumbers = [:]
             Task { await reload() }
         }
         .onChange(of: destination) {
             persistSelection()
         }
+        // Ayar toggle'ları değişince, yeni görünür alanlar boş kalmasın diye yeniden öner.
+        .onChange(of: buildNumberManaged) { suggestNext() }
+        .onChange(of: buildNumberShared) { suggestNext() }
         .sheet(isPresented: $showCredentialsSheet) {
             CredentialsEditor(project: project) {
                 showCredentialsSheet = false
@@ -204,21 +214,18 @@ struct FKProjectDetailView: View {
                     }
                 }
             }
-            HStack(spacing: 16) {
+            HStack(alignment: .bottom, spacing: 16) {
                 VStack(alignment: .leading) {
                     Text("Marketing version").font(.caption).foregroundStyle(.secondary)
                     TextField("1.2.3", text: $marketingVersion)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 160)
                 }
-                VStack(alignment: .leading) {
-                    Text("Build number").font(.caption).foregroundStyle(.secondary)
-                    TextField("48", text: $buildNumber)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 120)
+                buildNumberInputs
+                if buildNumberManaged {
+                    Button("Suggest next") { suggestNext() }
+                        .buttonStyle(.bordered)
                 }
-                Button("Suggest next") { suggestNext() }
-                    .buttonStyle(.bordered)
             }
             HStack {
                 Button {
@@ -232,7 +239,7 @@ struct FKProjectDetailView: View {
                         .padding(.vertical, 4)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(credentials == nil || marketingVersion.isEmpty || buildNumber.isEmpty || targetEnvironments.isEmpty)
+                .disabled(credentials == nil || !buildInputsValid)
                 if credentials == nil {
                     Text("Configure API key first").font(.caption).foregroundStyle(.orange)
                 }
@@ -342,15 +349,80 @@ struct FKProjectDetailView: View {
         if marketingVersion.isEmpty {
             marketingVersion = local?.marketingVersion ?? latestTF?.version ?? "1.0.0"
         }
-        if buildNumber.isEmpty {
-            // With multiple targets the next build must be higher than every target
-            // app's latest, otherwise a mid-sweep env hits a duplicate-build rejection.
-            let ascBuilds = isMultiTarget
-                ? Array(allEnvLatestBuilds.values)
-                : [Int(latestTF?.preReleaseVersion ?? "") ?? 0]
-            let candidates = ascBuilds + [Int(local?.buildNumber ?? "0") ?? 0]
-            buildNumber = String((candidates.max() ?? 0) + 1)
+        guard buildNumberManaged else { return }   // otomatik 1 → önerilecek bir şey yok
+        if buildNumberShared {
+            if buildNumber.isEmpty {
+                // With multiple targets the next build must be higher than every target
+                // app's latest, otherwise a mid-sweep env hits a duplicate-build rejection.
+                let ascBuilds = isMultiTarget
+                    ? Array(allEnvLatestBuilds.values)
+                    : [Int(latestTF?.preReleaseVersion ?? "") ?? 0]
+                let candidates = ascBuilds + [Int(local?.buildNumber ?? "0") ?? 0]
+                buildNumber = String((candidates.max() ?? 0) + 1)
+            }
+        } else {
+            for env in targetEnvironments where (perEnvBuildNumbers[env.name] ?? "").isEmpty {
+                perEnvBuildNumbers[env.name] = suggestedBuild(for: env)
+            }
         }
+    }
+
+    /// Tek bir ortamın kendi son ASC build'i + yerel xcconfig'e göre sıradaki numara.
+    private func suggestedBuild(for env: AppEnvironment) -> String {
+        let ascLatest = isMultiTarget
+            ? (allEnvLatestBuilds[env.name] ?? 0)
+            : (Int(latestTF?.preReleaseVersion ?? "") ?? 0)
+        let localLatest = Int(local?.buildNumber ?? "0") ?? 0
+        return String(max(ascLatest, localLatest) + 1)
+    }
+
+    /// Ayarlara göre üç şekle giren build number girişi: gizli (otomatik 1),
+    /// tek ortak alan, ya da ortam başına bir alan.
+    @ViewBuilder
+    private var buildNumberInputs: some View {
+        if !buildNumberManaged {
+            VStack(alignment: .leading) {
+                Text("Build number").font(.caption).foregroundStyle(.secondary)
+                Text("Otomatik: \(AppSettings.unmanagedBuildNumber)")
+                    .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            }
+        } else if buildNumberShared {
+            VStack(alignment: .leading) {
+                Text("Build number").font(.caption).foregroundStyle(.secondary)
+                TextField("48", text: $buildNumber)
+                    .textFieldStyle(.roundedBorder).frame(width: 120)
+            }
+        } else {
+            ForEach(targetEnvironments) { env in
+                VStack(alignment: .leading) {
+                    Text("Build · \(env.name)").font(.caption).foregroundStyle(.secondary)
+                    TextField("48", text: perEnvBinding(env))
+                        .textFieldStyle(.roundedBorder).frame(width: 120)
+                }
+            }
+        }
+    }
+
+    private func perEnvBinding(_ env: AppEnvironment) -> Binding<String> {
+        Binding(
+            get: { perEnvBuildNumbers[env.name] ?? "" },
+            set: { perEnvBuildNumbers[env.name] = $0 }
+        )
+    }
+
+    /// Bir ortam için gerçekten gönderilecek build number.
+    private func effectiveBuildNumber(for env: AppEnvironment) -> String {
+        guard buildNumberManaged else { return AppSettings.unmanagedBuildNumber }
+        if buildNumberShared { return buildNumber }
+        return perEnvBuildNumbers[env.name] ?? AppSettings.unmanagedBuildNumber
+    }
+
+    /// Upload butonunun aktif olup olmayacağı.
+    private var buildInputsValid: Bool {
+        guard !marketingVersion.isEmpty, !targetEnvironments.isEmpty else { return false }
+        guard buildNumberManaged else { return true }          // otomatik 1 → her zaman geçerli
+        if buildNumberShared { return !buildNumber.isEmpty }
+        return targetEnvironments.allSatisfy { !(perEnvBuildNumbers[$0.name] ?? "").isEmpty }
     }
 
     private func startPipeline() {
@@ -358,7 +430,7 @@ struct FKProjectDetailView: View {
         let envs = targetEnvironments
         guard !envs.isEmpty else { return }
         let states = envs.map {
-            PipelineState(project: project.applying($0), destination: destination, version: marketingVersion, buildNumber: buildNumber)
+            PipelineState(project: project.applying($0), destination: destination, version: marketingVersion, buildNumber: effectiveBuildNumber(for: $0))
         }
         let batch = PipelineBatch(states: states)
         pipelineBatch = batch

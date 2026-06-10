@@ -11,6 +11,11 @@ struct SettingsView: View {
     @State private var savedMessage: String?
     @State private var draft: AppConfig = ConfigStore.shared.config
 
+    // TestFlight yayın akışı için yerel tercihler — sunucu config'inden bağımsız,
+    // @AppStorage ile anında kaydolur ("Kaydet ve yeniden başlat" gerektirmez).
+    @AppStorage(AppSettings.buildNumberManagedKey) private var buildNumberManaged = true
+    @AppStorage(AppSettings.buildNumberSharedKey) private var buildNumberShared = true
+
     // Projeler artık DB'den (tek kaynak); config.json'dan değil.
     @State private var dbProjects: [APIClient.ProjectInfo] = []
     @State private var editingProject: APIClient.ProjectInfo?
@@ -25,6 +30,7 @@ struct SettingsView: View {
                 providersSection
                 rolesSection
                 projectsSection
+                buildNumberSection
 
                 HStack {
                     if let err = saveError {
@@ -162,6 +168,28 @@ struct SettingsView: View {
                     .innerPanel(padding: 10)
                 }
             }
+        }
+    }
+
+    private var buildNumberSection: some View {
+        section("TestFlight · Build number") {
+            Toggle("Build number'ı her yayında sor", isOn: $buildNumberManaged)
+            Text(buildNumberManaged
+                 ? "Her yayında build number alanı gösterilir ve elle girilir."
+                 : "Build number alanı gizlenir; her ortama arka planda otomatik olarak \(AppSettings.unmanagedBuildNumber) gönderilir.")
+                .font(.caption).foregroundStyle(.secondary)
+
+            Picker("Çoklu ortamda build number", selection: $buildNumberShared) {
+                Text("Tüm ortamlar için ortak").tag(true)
+                Text("Her ortam için ayrı").tag(false)
+            }
+            .pickerStyle(.radioGroup)
+            .disabled(!buildNumberManaged)
+
+            Text(buildNumberShared
+                 ? "Seçili tüm ortamlar aynı build number ile yayınlanır."
+                 : "Her seçili ortam için ayrı bir build number girilir.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 

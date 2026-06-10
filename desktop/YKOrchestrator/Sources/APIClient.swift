@@ -84,16 +84,38 @@ final class APIClient {
     // MARK: - SSE stream
 
     /// SSE event'lerini AsyncThrowingStream olarak verir. Her event'in `event` ve `data`'sı.
-    func sseStream(path: String, query: [String: String?] = [:]) -> AsyncThrowingStream<SSEEvent, Error> {
+    func sseStream(path: String, query: [String: String?] = [:], timeout: TimeInterval = 600) -> AsyncThrowingStream<SSEEvent, Error> {
         let url = makeURL(path: path, query: query)
         var req = URLRequest(url: url)
         req.addValue("text/event-stream", forHTTPHeaderField: "Accept")
-        req.timeoutInterval = 600
+        req.timeoutInterval = timeout
+        return sseStream(request: req)
+    }
 
+    /// POST body ile SSE (agent plan/code stream gibi).
+    func sseStreamPOST<Body: Encodable>(path: String, body: Body, timeout: TimeInterval = 1800)
+        -> AsyncThrowingStream<SSEEvent, Error> {
+        let url = makeURL(path: path, query: [:])
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = timeout
+        do {
+            req.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            return AsyncThrowingStream { $0.finish(throwing: error) }
+        }
+        return sseStream(request: req)
+    }
+
+    private func sseStream(request req: URLRequest) -> AsyncThrowingStream<SSEEvent, Error> {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    ykLog("SSE connect \(req.httpMethod ?? "?") \(req.url?.path ?? "") bodyLen=\(req.httpBody?.count ?? -1)")
                     let (bytes, resp) = try await session.bytes(for: req)
+                    ykLog("SSE response status=\((resp as? HTTPURLResponse)?.statusCode ?? -1)")
                     try Self.checkResponse(resp, data: Data())
                     var currentEvent = "message"
                     var dataBuffer = ""
@@ -615,6 +637,79 @@ extension APIClient {
         struct B: Encodable { let jira_key: String; let plan: String; let project_id: Int? }
         return try await post("api/agent/code",
                               body: B(jira_key: jiraKey, plan: plan, project_id: projectId))
+    }
+
+    // MARK: - Agent streaming (canlı konsol)
+
+    enum AgentEvent: Sendable {
+        case meta(repo: String, summary: String)
+        case text(String)
+        case thinking(String)
+        case tool(name: String, summary: String)
+        case toolResult(isError: Bool)
+        case done(costUSD: Double?, durationMs: Int?, isError: Bool, result: String)
+        case error(String)
+
+        static func from(_ ev: SSEEvent) -> AgentEvent? {
+            let d = ev.data.data(using: .utf8) ?? Data()
+            func str() -> String { (try? JSONDecoder().decode(String.self, from: d)) ?? ev.data }
+            switch ev.event {
+            case "text": return .text(str())
+            case "thinking": return .thinking(str())
+            case "tool":
+                struct T: Decodable { let name: String; let summary: String? }
+                guard let t = try? JSONDecoder().decode(T.self, from: d) else { return nil }
+                return .tool(name: t.name, summary: t.summary ?? "")
+            case "tool_result":
+                struct R: Decodable { let is_error: Bool? }
+                return .toolResult(isError: (try? JSONDecoder().decode(R.self, from: d))?.is_error ?? false)
+            case "done":
+                struct Dn: Decodable { let cost_usd: Double?; let duration_ms: Int?; let is_error: Bool?; let result: String? }
+                let dn = try? JSONDecoder().decode(Dn.self, from: d)
+                return .done(costUSD: dn?.cost_usd, durationMs: dn?.duration_ms,
+                            isError: dn?.is_error ?? false, result: dn?.result ?? "")
+            case "meta":
+                struct M: Decodable { let repo: String?; let jira_summary: String? }
+                let m = try? JSONDecoder().decode(M.self, from: d)
+                return .meta(repo: m?.repo ?? "", summary: m?.jira_summary ?? "")
+            case "error": return .error(str())
+            default: return nil
+            }
+        }
+    }
+
+    private func mapAgentEvents(_ raw: AsyncThrowingStream<SSEEvent, Error>)
+        -> AsyncThrowingStream<AgentEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await ev in raw {
+                        if let a = AgentEvent.from(ev) { continuation.yield(a) }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func agentPlanStream(jiraKey: String, projectId: Int?) -> AsyncThrowingStream<AgentEvent, Error> {
+        // GET + SSE (POST body ile bytes streaming URLSession'da akmıyor — bilinen sınırlama)
+        mapAgentEvents(sseStream(
+            path: "api/agent/plan/stream",
+            query: ["jira_key": jiraKey, "project_id": projectId.map(String.init)],
+            timeout: 1800
+        ))
+    }
+
+    func agentCodeStream(jiraKey: String, plan: String, projectId: Int?) -> AsyncThrowingStream<AgentEvent, Error> {
+        mapAgentEvents(sseStream(
+            path: "api/agent/code/stream",
+            query: ["jira_key": jiraKey, "plan": plan, "project_id": projectId.map(String.init)],
+            timeout: 2400
+        ))
     }
 
     struct AgentDiffResult: Decodable {
